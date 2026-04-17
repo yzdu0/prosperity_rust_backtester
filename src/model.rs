@@ -133,6 +133,7 @@ pub struct RunRequest {
     pub OSMIUM_CLIP: i64,
     pub SNIPE_POSITION_LIMIT: i64,
     pub WINDOW_SIZE: i64,
+    pub DEVIATION_MULTIPLIER: i64,
     /*
 OSMIUM_CLIP          = 10      # max qty per side per tick (≤ max observed market order)
 SNIPE_POSITION_LIMIT = 40      # max net position built purely through sniping

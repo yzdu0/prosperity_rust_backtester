@@ -434,12 +434,13 @@ impl PythonTrader {
         osmium_clip: i64,
         snipe_position_limit: i64,
         window_size: i64,
+        deviation: i64
     ) -> Result<()> {
         Python::attach(|py| -> Result<()> {
             self.trader
                 .bind(py)
                 .getattr("update_globals")?
-                .call1((osmium_clip, snipe_position_limit, window_size))?;
+                .call1((osmium_clip, snipe_position_limit, window_size, deviation))?;
             Ok(())
         })
     }

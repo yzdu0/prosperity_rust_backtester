@@ -16,6 +16,7 @@ OSMIUM_MM_INSIDE     = 60      # max distance from FV for passive quotes
 OSMIUM_CLIP          = 10      # max qty per side per tick (≤ max observed market order)
 SNIPE_POSITION_LIMIT = 40      # max net position built purely through sniping
 WINDOW_SIZE          = 25      # rolling-average window for OSMIUM fair value
+DEVIATION_MULTIPLIER = 2.0     # how much extra room to give when sniping based on current FV deviation from long-run FV
 
 
 # ─────────────────────────────────────────
@@ -36,11 +37,12 @@ class Trader:
         self.best_ask_ever: Optional[float] = None
         self.timestep: int = 0
 
-    def update_globals(self, osmium_clip, snipe_position_limit, window_size):
-        global OSMIUM_CLIP, SNIPE_POSITION_LIMIT, WINDOW_SIZE
+    def update_globals(self, osmium_clip, snipe_position_limit, window_size, deviation_multiplier):
+        global OSMIUM_CLIP, SNIPE_POSITION_LIMIT, WINDOW_SIZE, DEVIATION_MULTIPLIER
         OSMIUM_CLIP = osmium_clip
         SNIPE_POSITION_LIMIT = snipe_position_limit
         WINDOW_SIZE = window_size
+        DEVIATION_MULTIPLIER
 
     # ── internal helpers ────────────────────────────────────────────────
 
@@ -175,7 +177,7 @@ class Trader:
                 avail = -depth.sell_orders[ask_px]
                 # When market is below long-run FV (deviation < 0), give
                 # ourselves slightly more room to buy (mean-reversion bet).
-                room = int(SNIPE_POSITION_LIMIT - pos - deviation * 2)
+                room = int(SNIPE_POSITION_LIMIT - pos - deviation * DEVIATION_MULTIPLIER)
                 qty  = int(min(avail, max(0, room)))
                 if qty > 0:
                     orders.append(Order("ASH_COATED_OSMIUM", ask_px, qty))
@@ -185,7 +187,7 @@ class Trader:
         for bid_px in sorted(depth.buy_orders.keys(), reverse=True):
             if bid_px > fv:                          # strictly above fair → edge
                 avail = depth.buy_orders[bid_px]
-                room  = int(SNIPE_POSITION_LIMIT + pos + deviation * 2)
+                room  = int(SNIPE_POSITION_LIMIT + pos + deviation * DEVIATION_MULTIPLIER)
                 qty   = int(min(avail, max(0, room)))
                 if qty > 0:
                     orders.append(Order("ASH_COATED_OSMIUM", bid_px, -qty))

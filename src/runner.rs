@@ -164,7 +164,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
 
     let mut trader = PythonTrader::new(&workspace_root(), &request.trader_file)?;
 
-    trader.update_globals(request.OSMIUM_CLIP, request.SNIPE_POSITION_LIMIT, request.WINDOW_SIZE);
+    trader.update_globals(request.OSMIUM_CLIP, request.SNIPE_POSITION_LIMIT, request.WINDOW_SIZE, request.DEVIATION_MULTIPLIER);
 
     let run_id = resolve_run_id(request)?;
     let run_dir = request.output_root.join(&run_id);

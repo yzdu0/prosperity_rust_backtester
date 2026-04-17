@@ -50,7 +50,7 @@ struct Args {
     products: ProductDisplayMode,
 }
 
-pub fn run(osmium_clip: i64, snipe: i64, window_size: i64) -> Result<()> {
+pub fn run(osmium_clip: i64, snipe: i64, window_size: i64, deviation: i64) -> Result<f64> {
     let args = Args::parse();
     let trader = resolve_trader(args.trader.as_deref())?;
     let dataset = resolve_dataset_input(args.dataset.as_deref())?;
@@ -83,6 +83,8 @@ pub fn run(osmium_clip: i64, snipe: i64, window_size: i64) -> Result<()> {
     let (persist, write_metrics, write_bundle, write_submission_log, materialize_artifacts) =
         artifact_mode_settings(artifact_mode);
 
+    let mut out1 : f64 = 0.0;
+
     for plan in plans {
         let output = run_backtest(&RunRequest {
             trader_file: trader.path.clone(),
@@ -101,6 +103,7 @@ pub fn run(osmium_clip: i64, snipe: i64, window_size: i64) -> Result<()> {
             OSMIUM_CLIP: osmium_clip,
             SNIPE_POSITION_LIMIT: snipe, 
             WINDOW_SIZE: window_size,
+            DEVIATION_MULTIPLIER: deviation,
         })?;
 
         let run_dir_label = if let Some(flat_dir) = &flat_dir {
@@ -129,7 +132,11 @@ pub fn run(osmium_clip: i64, snipe: i64, window_size: i64) -> Result<()> {
             final_pnl_by_product: output.metrics.final_pnl_by_product.clone(),
             run_dir: Some(run_dir_label),
         });
+
+        out1 += output.metrics.final_pnl_total;
+
         outputs.push(output);
+
     }
 
     let bundle_dir = if let Some(flat_dir) = &flat_dir {
@@ -157,7 +164,7 @@ pub fn run(osmium_clip: i64, snipe: i64, window_size: i64) -> Result<()> {
         bundle_dir.as_deref(),
         flat_layout,
     );
-    Ok(())
+    Ok(out1)
 }
 
 #[derive(Debug, Clone)]
