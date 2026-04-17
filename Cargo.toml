@@ -5,6 +5,8 @@ edition = "2024"
 description = "Standalone Rust IMC Prosperity 4 backtester"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/GeyzsoN/prosperity_rust_backtester"
+homepage = "https://github.com/GeyzsoN/prosperity_rust_backtester"
 keywords = ["imc", "backtester", "trading", "rust"]
 categories = ["command-line-utilities", "simulation"]
 
