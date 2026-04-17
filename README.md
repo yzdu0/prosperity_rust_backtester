@@ -31,7 +31,7 @@ pub struct GridConfig {
 }
 ```
 
-3. Modify main.rs as required
+3. Modify src/main.rs as required
 
 ## Setup
 
