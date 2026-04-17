@@ -8,6 +8,31 @@ Everything needed for the default backtest flow now lives inside this directory.
 
 - `traders/latest_trader.py`
 
+## GRID SEARCH
+
+1. Modify your trader.py:
+```python
+ def update_globals(self, osmium_clip, snipe_position_limit, window_size, deviation_multiplier):
+        global OSMIUM_CLIP, SNIPE_POSITION_LIMIT, WINDOW_SIZE, DEVIATION_MULTIPLIER
+        OSMIUM_CLIP = osmium_clip
+        SNIPE_POSITION_LIMIT = snipe_position_limit
+        WINDOW_SIZE = window_size
+        DEVIATION_MULTIPLIER
+```
+
+2. Modify src/model.rs:
+```rust
+#[derive(Debug, Clone)]
+pub struct GridConfig {
+    pub OSMIUM_CLIP: i64,
+    pub SNIPE_POSITION_LIMIT: i64,
+    pub WINDOW_SIZE: i64,
+    pub DEVIATION_MULTIPLIER: i64,
+}
+```
+
+3. Modify main.rs as required
+
 ## Setup
 
 Clone the repo:
