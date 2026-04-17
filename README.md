@@ -1,4 +1,4 @@
-# Rust Backtester
+# Rust Backtester - forked to run grid search on a set of global variables
 
 This repo is a self-contained Rust backtester for IMC Prosperity 4.
 
@@ -8,9 +8,9 @@ Everything needed for the default backtest flow now lives inside this directory.
 
 - `traders/latest_trader.py`
 
-## GRID SEARCH
+## Grid Search
 
-1. Modify your trader.py:
+1. Modify your `latest_trader.py`:
 ```python
  def update_globals(self, osmium_clip, snipe_position_limit, window_size, deviation_multiplier):
         global OSMIUM_CLIP, SNIPE_POSITION_LIMIT, WINDOW_SIZE, DEVIATION_MULTIPLIER
@@ -20,7 +20,7 @@ Everything needed for the default backtest flow now lives inside this directory.
         DEVIATION_MULTIPLIER
 ```
 
-2. Modify src/model.rs:
+2. Modify `src/model.rs`:
 ```rust
 #[derive(Debug, Clone)]
 pub struct GridConfig {
@@ -31,7 +31,7 @@ pub struct GridConfig {
 }
 ```
 
-3. Modify src/main.rs as required
+3. Modify `src/main.rs` as required.
 
 ## Setup
 
