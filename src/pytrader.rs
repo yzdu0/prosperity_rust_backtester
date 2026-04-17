@@ -362,6 +362,7 @@ pub struct TraderRunResult {
 pub struct PythonTrader {
     trader: Py<PyAny>,
     invoke_fn: Py<PyAny>,
+    update_globals_fn: Py<PyAny>,
 }
 
 fn python_import_lock() -> &'static Mutex<()> {
@@ -418,11 +419,28 @@ impl PythonTrader {
                 datamodel_module.clone(),
             ))?;
             let invoke_fn = helper.getattr("invoke_trader_on_payload")?;
+            let update_globals_fn = trader.getattr("update_globals")?;
 
             Ok(Self {
                 trader: trader.unbind(),
                 invoke_fn: invoke_fn.unbind(),
+                update_globals_fn: update_globals_fn.unbind(),
             })
+        })
+    }
+
+    pub fn update_globals(
+        &mut self,
+        osmium_clip: i64,
+        snipe_position_limit: i64,
+        window_size: i64,
+    ) -> Result<()> {
+        Python::attach(|py| -> Result<()> {
+            self.trader
+                .bind(py)
+                .getattr("update_globals")?
+                .call1((osmium_clip, snipe_position_limit, window_size))?;
+            Ok(())
         })
     }
 

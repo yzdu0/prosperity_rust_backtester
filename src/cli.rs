@@ -50,7 +50,7 @@ struct Args {
     products: ProductDisplayMode,
 }
 
-pub fn run() -> Result<()> {
+pub fn run(osmium_clip: i64, snipe: i64, window_size: i64) -> Result<()> {
     let args = Args::parse();
     let trader = resolve_trader(args.trader.as_deref())?;
     let dataset = resolve_dataset_input(args.dataset.as_deref())?;
@@ -98,6 +98,9 @@ pub fn run() -> Result<()> {
             write_submission_log,
             materialize_artifacts,
             metadata_overrides: plan.metadata_overrides.clone(),
+            OSMIUM_CLIP: osmium_clip,
+            SNIPE_POSITION_LIMIT: snipe, 
+            WINDOW_SIZE: window_size,
         })?;
 
         let run_dir_label = if let Some(flat_dir) = &flat_dir {
@@ -1195,7 +1198,7 @@ fn print_summary(
     bundle_dir: Option<&str>,
     flat_layout: bool,
 ) {
-    println!(
+    /*println!(
         "trader: {}{}",
         short_trader_label(&trader.path),
         if trader.auto_selected { " [auto]" } else { "" }
@@ -1227,8 +1230,8 @@ fn print_summary(
                 "bundle: {bundle_dir} [manifest+combined logs only; use each RUN_DIR/submission.log for visualization]"
             );
         }
-    }
-    println!(
+    }*/
+    /*println!(
         "{:<12} {:>6} {:>8} {:>11} {:>12}  RUN_DIR",
         "SET", "DAY", "TICKS", "OWN_TRADES", "FINAL_PNL"
     );
@@ -1242,7 +1245,7 @@ fn print_summary(
             row.final_pnl_total,
             row.run_dir.as_deref().unwrap_or("-")
         );
-    }
+    }*/
     if rows.len() > 1 {
         let total_ticks: usize = rows.iter().map(|row| row.tick_count).sum();
         let total_own_trades: usize = rows.iter().map(|row| row.own_trade_count).sum();
