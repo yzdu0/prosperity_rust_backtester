@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.0 - 2026-04-17
+
+### Changed
+
+- Replay raw `prices_*.csv` and `trades_*.csv` datasets with a dedicated CSV-tape matcher that crosses submission orders against the visible book first, keeps submission remainders resting for the current tick, and only carries residual bot-vs-bot trades into the public tape.
+- Preserve price-time priority between visible book liquidity, resting submission orders, and replayed CSV bot trades so submission fills only occur when they should under the replay model.
+- Mark bundle timelines, submission logs, and PnL using a stable mark price: current two-sided midpoint when available, last stable two-sided midpoint through one-sided or empty ticks, and a visible-side bootstrap only when no stable midpoint exists yet.
+
+### Fixed
+
+- Fail fast when a raw `prices_*.csv` file is missing its paired `trades_*.csv` instead of silently running with an empty market-trade tape.
+- Add regression coverage for raw CSV replay ordering, missing trade-pair detection, and stable mark-price carry-forward behavior.
+
 ## v0.3.0 - 2026-04-16
 
 ### Changed

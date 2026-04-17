@@ -13,8 +13,8 @@ use crate::jsonfmt::{
     sorted_json_bytes,
 };
 use crate::model::{
-    ArtifactSet, MatchingConfig, MetadataOverrides, Order, RunMetrics, RunOutput, RunRequest,
-    TickSnapshot, Trade, load_dataset,
+    ArtifactSet, MatchingConfig, MetadataOverrides, NormalizedDataset, Order, RunMetrics,
+    RunOutput, RunRequest, TickSnapshot, Trade, load_dataset,
 };
 use crate::pytrader::{PythonTrader, TraderInvocation};
 
@@ -31,6 +31,18 @@ struct BookLevel {
 #[derive(Clone)]
 struct FlatOrderRow {
     symbol: String,
+    price: i64,
+    quantity: i64,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MarketReplayMode {
+    RawCsvTape,
+    ExecutedTradeHistory,
+}
+
+#[derive(Clone, Copy)]
+struct RestingSubmissionOrder {
     price: i64,
     quantity: i64,
 }
@@ -120,12 +132,26 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn market_replay_mode(dataset: &NormalizedDataset) -> MarketReplayMode {
+    if dataset
+        .metadata
+        .get("source_format")
+        .and_then(Value::as_str)
+        == Some("imc_csv")
+    {
+        MarketReplayMode::RawCsvTape
+    } else {
+        MarketReplayMode::ExecutedTradeHistory
+    }
+}
+
 pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
     let dataset = if let Some(dataset) = &request.dataset_override {
         dataset.clone()
     } else {
         load_dataset(&request.dataset_file)?
     };
+    let replay_mode = market_replay_mode(&dataset);
     let mut ticks: Vec<&TickSnapshot> = dataset
         .ticks
         .iter()
@@ -173,6 +199,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
     let mut own_trades_prev: IndexMap<String, Vec<Trade>> = IndexMap::new();
     let mut market_trades_prev: IndexMap<String, Vec<Trade>> = IndexMap::new();
     let mut trader_data = String::new();
+    let mut last_stable_mark_by_product: IndexMap<String, f64> = IndexMap::new();
 
     let mut own_trade_count = 0usize;
     let mut final_pnl_total = 0.0f64;
@@ -222,18 +249,32 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
 
-            let (symbol_own_trades, remaining_market, symbol_orders) = match_orders_for_symbol(
-                product,
-                orders_by_symbol.get(product).cloned().unwrap_or_default(),
-                &mut bids,
-                &mut asks,
-                market_trades,
-                &mut position,
-                &mut cash_by_product,
-                tick.timestamp,
-                &request.matching,
-                full_artifacts,
-            );
+            let (symbol_own_trades, remaining_market, symbol_orders) = match replay_mode {
+                MarketReplayMode::RawCsvTape => match_orders_for_symbol_raw_csv_tape(
+                    product,
+                    orders_by_symbol.get(product).cloned().unwrap_or_default(),
+                    &mut bids,
+                    &mut asks,
+                    market_trades,
+                    &mut position,
+                    &mut cash_by_product,
+                    tick.timestamp,
+                    &request.matching,
+                    full_artifacts,
+                ),
+                MarketReplayMode::ExecutedTradeHistory => match_orders_for_symbol(
+                    product,
+                    orders_by_symbol.get(product).cloned().unwrap_or_default(),
+                    &mut bids,
+                    &mut asks,
+                    market_trades,
+                    &mut position,
+                    &mut cash_by_product,
+                    tick.timestamp,
+                    &request.matching,
+                    full_artifacts,
+                ),
+            };
 
             if need_submission_log {
                 for trade in &remaining_market {
@@ -263,17 +304,27 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
         let sandbox_log = limit_messages.join("\n");
 
         let mut pnl_by_product = IndexMap::with_capacity(dataset.products.len());
+        let mut mark_prices = IndexMap::with_capacity(dataset.products.len());
         for product in &dataset.products {
             let snapshot = tick.products.get(product);
-            let mid_price = snapshot.and_then(|row| row.mid_price);
-            let mark_to_market = mid_price
+            if let Some(stable_mark) = resolve_stable_mark(snapshot) {
+                last_stable_mark_by_product.insert(product.clone(), stable_mark);
+            }
+            let mark_price = resolve_mark_price(
+                snapshot,
+                last_stable_mark_by_product.get(product).copied(),
+            );
+            if let Some(price) = mark_price {
+                mark_prices.insert(product.clone(), price);
+            }
+            let mark_to_market = mark_price
                 .map(|price| position.get(product).copied().unwrap_or(0) as f64 * price)
                 .unwrap_or(0.0);
             let pnl = cash_by_product.get(product).copied().unwrap_or(0.0) + mark_to_market;
             pnl_by_product.insert(product.clone(), pnl);
 
             if need_submission_log {
-                activity_rows.push(format_activity_row(tick, product, snapshot, pnl));
+                activity_rows.push(format_activity_row(tick, product, snapshot, mark_price, pnl));
             }
         }
 
@@ -306,6 +357,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
                     &own_trades_tick,
                     &market_trades_next,
                     &position,
+                    &mark_prices,
                     &pnl_by_product,
                     final_pnl_total,
                     &sandbox_log,
@@ -750,6 +802,352 @@ fn match_orders_for_symbol(
     (own_trades, remaining_market, order_rows)
 }
 
+fn match_orders_for_symbol_raw_csv_tape(
+    symbol: &str,
+    orders: Vec<Order>,
+    bids: &mut [BookLevel],
+    asks: &mut [BookLevel],
+    market_trades: &[crate::model::MarketTrade],
+    position: &mut IndexMap<String, i64>,
+    cash_by_product: &mut IndexMap<String, f64>,
+    timestamp: i64,
+    config: &MatchingConfig,
+    record_orders: bool,
+) -> (Vec<Trade>, Vec<Trade>, Vec<FlatOrderRow>) {
+    let mut own_trades = Vec::new();
+    let mut public_market_trades = Vec::new();
+    let mut order_rows = Vec::new();
+    let mut resting_bids = Vec::new();
+    let mut resting_asks = Vec::new();
+
+    for order in orders {
+        let mut remaining = order.quantity;
+        if record_orders {
+            order_rows.push(FlatOrderRow {
+                symbol: order.symbol.clone(),
+                price: order.price,
+                quantity: order.quantity,
+            });
+        }
+
+        if remaining > 0 {
+            for level in asks.iter_mut() {
+                if remaining <= 0 {
+                    break;
+                }
+                if level.price > order.price || level.volume <= 0 {
+                    continue;
+                }
+                let fill = remaining.min(level.volume);
+                let trade_price =
+                    slippage_adjusted_price(level.price, true, config.price_slippage_bps);
+                own_trades.push(Trade {
+                    symbol: symbol.to_string(),
+                    price: trade_price,
+                    quantity: fill,
+                    buyer: "SUBMISSION".to_string(),
+                    seller: String::new(),
+                    timestamp,
+                });
+                adjust_position(position, symbol, fill);
+                adjust_cash(cash_by_product, symbol, -(trade_price as f64 * fill as f64));
+                level.volume -= fill;
+                remaining -= fill;
+            }
+            if remaining > 0 {
+                resting_bids.push(RestingSubmissionOrder {
+                    price: order.price,
+                    quantity: remaining,
+                });
+            }
+        } else if remaining < 0 {
+            for level in bids.iter_mut() {
+                if remaining >= 0 {
+                    break;
+                }
+                if level.price < order.price || level.volume <= 0 {
+                    continue;
+                }
+                let fill = (-remaining).min(level.volume);
+                let trade_price =
+                    slippage_adjusted_price(level.price, false, config.price_slippage_bps);
+                own_trades.push(Trade {
+                    symbol: symbol.to_string(),
+                    price: trade_price,
+                    quantity: fill,
+                    buyer: String::new(),
+                    seller: "SUBMISSION".to_string(),
+                    timestamp,
+                });
+                adjust_position(position, symbol, -fill);
+                adjust_cash(cash_by_product, symbol, trade_price as f64 * fill as f64);
+                level.volume -= fill;
+                remaining += fill;
+            }
+            if remaining < 0 {
+                resting_asks.push(RestingSubmissionOrder {
+                    price: order.price,
+                    quantity: -remaining,
+                });
+            }
+        }
+    }
+
+    for trade in market_trades {
+        if trade.quantity <= 0 {
+            continue;
+        }
+        let trade_timestamp = if trade.timestamp == 0 {
+            timestamp
+        } else {
+            trade.timestamp
+        };
+        let mut synthetic_bid_remaining = trade.quantity;
+        let mut synthetic_ask_remaining = trade.quantity;
+
+        sweep_synthetic_sell_into_liquidity(
+            symbol,
+            trade.price,
+            &mut synthetic_ask_remaining,
+            bids,
+            &mut resting_bids,
+            position,
+            cash_by_product,
+            &mut own_trades,
+            trade_timestamp,
+            &trade.seller,
+            config.price_slippage_bps,
+        );
+        sweep_synthetic_buy_into_liquidity(
+            symbol,
+            trade.price,
+            &mut synthetic_bid_remaining,
+            asks,
+            &mut resting_asks,
+            position,
+            cash_by_product,
+            &mut own_trades,
+            trade_timestamp,
+            &trade.buyer,
+            config.price_slippage_bps,
+        );
+
+        let residual_public_quantity = synthetic_bid_remaining.min(synthetic_ask_remaining);
+        if residual_public_quantity > 0 {
+            public_market_trades.push(Trade {
+                symbol: symbol.to_string(),
+                price: trade.price,
+                quantity: residual_public_quantity,
+                buyer: trade.buyer.clone(),
+                seller: trade.seller.clone(),
+                timestamp: trade_timestamp,
+            });
+        }
+    }
+
+    (own_trades, public_market_trades, order_rows)
+}
+
+#[derive(Clone, Copy)]
+enum RestingBidSource {
+    Visible(usize),
+    Submission(usize),
+}
+
+#[derive(Clone, Copy)]
+enum RestingAskSource {
+    Visible(usize),
+    Submission(usize),
+}
+
+fn sweep_synthetic_sell_into_liquidity(
+    symbol: &str,
+    trade_price: i64,
+    synthetic_remaining: &mut i64,
+    bids: &mut [BookLevel],
+    resting_bids: &mut [RestingSubmissionOrder],
+    position: &mut IndexMap<String, i64>,
+    cash_by_product: &mut IndexMap<String, f64>,
+    own_trades: &mut Vec<Trade>,
+    timestamp: i64,
+    counterparty_seller: &str,
+    slippage_bps: f64,
+) {
+    while *synthetic_remaining > 0 {
+        let Some(source) = best_bid_liquidity_source(bids, resting_bids, trade_price) else {
+            break;
+        };
+        match source {
+            RestingBidSource::Visible(index) => {
+                let fill = (*synthetic_remaining).min(bids[index].volume);
+                bids[index].volume -= fill;
+                *synthetic_remaining -= fill;
+            }
+            RestingBidSource::Submission(index) => {
+                let fill = (*synthetic_remaining).min(resting_bids[index].quantity);
+                let execution_price =
+                    slippage_adjusted_price(resting_bids[index].price, true, slippage_bps);
+                own_trades.push(Trade {
+                    symbol: symbol.to_string(),
+                    price: execution_price,
+                    quantity: fill,
+                    buyer: "SUBMISSION".to_string(),
+                    seller: counterparty_seller.to_string(),
+                    timestamp,
+                });
+                adjust_position(position, symbol, fill);
+                adjust_cash(
+                    cash_by_product,
+                    symbol,
+                    -(execution_price as f64 * fill as f64),
+                );
+                resting_bids[index].quantity -= fill;
+                *synthetic_remaining -= fill;
+            }
+        }
+    }
+}
+
+fn sweep_synthetic_buy_into_liquidity(
+    symbol: &str,
+    trade_price: i64,
+    synthetic_remaining: &mut i64,
+    asks: &mut [BookLevel],
+    resting_asks: &mut [RestingSubmissionOrder],
+    position: &mut IndexMap<String, i64>,
+    cash_by_product: &mut IndexMap<String, f64>,
+    own_trades: &mut Vec<Trade>,
+    timestamp: i64,
+    counterparty_buyer: &str,
+    slippage_bps: f64,
+) {
+    while *synthetic_remaining > 0 {
+        let Some(source) = best_ask_liquidity_source(asks, resting_asks, trade_price) else {
+            break;
+        };
+        match source {
+            RestingAskSource::Visible(index) => {
+                let fill = (*synthetic_remaining).min(asks[index].volume);
+                asks[index].volume -= fill;
+                *synthetic_remaining -= fill;
+            }
+            RestingAskSource::Submission(index) => {
+                let fill = (*synthetic_remaining).min(resting_asks[index].quantity);
+                let execution_price =
+                    slippage_adjusted_price(resting_asks[index].price, false, slippage_bps);
+                own_trades.push(Trade {
+                    symbol: symbol.to_string(),
+                    price: execution_price,
+                    quantity: fill,
+                    buyer: counterparty_buyer.to_string(),
+                    seller: "SUBMISSION".to_string(),
+                    timestamp,
+                });
+                adjust_position(position, symbol, -fill);
+                adjust_cash(cash_by_product, symbol, execution_price as f64 * fill as f64);
+                resting_asks[index].quantity -= fill;
+                *synthetic_remaining -= fill;
+            }
+        }
+    }
+}
+
+fn best_bid_liquidity_source(
+    bids: &[BookLevel],
+    resting_bids: &[RestingSubmissionOrder],
+    min_price: i64,
+) -> Option<RestingBidSource> {
+    let visible = best_visible_bid_index(bids, min_price);
+    let submission = best_resting_bid_index(resting_bids, min_price);
+    match (visible, submission) {
+        (Some(visible_index), Some(submission_index)) => {
+            let visible_price = bids[visible_index].price;
+            let submission_price = resting_bids[submission_index].price;
+            if visible_price >= submission_price {
+                Some(RestingBidSource::Visible(visible_index))
+            } else {
+                Some(RestingBidSource::Submission(submission_index))
+            }
+        }
+        (Some(index), None) => Some(RestingBidSource::Visible(index)),
+        (None, Some(index)) => Some(RestingBidSource::Submission(index)),
+        (None, None) => None,
+    }
+}
+
+fn best_ask_liquidity_source(
+    asks: &[BookLevel],
+    resting_asks: &[RestingSubmissionOrder],
+    max_price: i64,
+) -> Option<RestingAskSource> {
+    let visible = best_visible_ask_index(asks, max_price);
+    let submission = best_resting_ask_index(resting_asks, max_price);
+    match (visible, submission) {
+        (Some(visible_index), Some(submission_index)) => {
+            let visible_price = asks[visible_index].price;
+            let submission_price = resting_asks[submission_index].price;
+            if visible_price <= submission_price {
+                Some(RestingAskSource::Visible(visible_index))
+            } else {
+                Some(RestingAskSource::Submission(submission_index))
+            }
+        }
+        (Some(index), None) => Some(RestingAskSource::Visible(index)),
+        (None, Some(index)) => Some(RestingAskSource::Submission(index)),
+        (None, None) => None,
+    }
+}
+
+fn best_visible_bid_index(bids: &[BookLevel], min_price: i64) -> Option<usize> {
+    bids.iter()
+        .enumerate()
+        .find(|(_, level)| level.volume > 0 && level.price >= min_price)
+        .map(|(index, _)| index)
+}
+
+fn best_visible_ask_index(asks: &[BookLevel], max_price: i64) -> Option<usize> {
+    asks.iter()
+        .enumerate()
+        .find(|(_, level)| level.volume > 0 && level.price <= max_price)
+        .map(|(index, _)| index)
+}
+
+fn best_resting_bid_index(
+    resting_bids: &[RestingSubmissionOrder],
+    min_price: i64,
+) -> Option<usize> {
+    let mut best = None;
+    let mut best_price = i64::MIN;
+    for (index, order) in resting_bids.iter().enumerate() {
+        if order.quantity <= 0 || order.price < min_price {
+            continue;
+        }
+        if best.is_none() || order.price > best_price {
+            best = Some(index);
+            best_price = order.price;
+        }
+    }
+    best
+}
+
+fn best_resting_ask_index(
+    resting_asks: &[RestingSubmissionOrder],
+    max_price: i64,
+) -> Option<usize> {
+    let mut best = None;
+    let mut best_price = i64::MAX;
+    for (index, order) in resting_asks.iter().enumerate() {
+        if order.quantity <= 0 || order.price > max_price {
+            continue;
+        }
+        if best.is_none() || order.price < best_price {
+            best = Some(index);
+            best_price = order.price;
+        }
+    }
+    best
+}
+
 fn market_trade_duplicates_touch(
     trade: &crate::model::MarketTrade,
     best_bid: Option<i64>,
@@ -844,12 +1242,51 @@ fn truncate_logs(raw: &str) -> String {
     out
 }
 
+fn resolve_stable_mark(snapshot: Option<&crate::model::ProductSnapshot>) -> Option<f64> {
+    let Some(snapshot) = snapshot else {
+        return None;
+    };
+
+    let best_bid = snapshot.bids.first().map(|level| level.price as f64);
+    let best_ask = snapshot.asks.first().map(|level| level.price as f64);
+    let positive_mid = snapshot.mid_price.filter(|price| *price > 0.0);
+
+    match (best_bid, best_ask) {
+        (Some(bid), Some(ask)) => positive_mid.or(Some((bid + ask) / 2.0)),
+        _ => None,
+    }
+}
+
+fn resolve_mark_price(
+    snapshot: Option<&crate::model::ProductSnapshot>,
+    previous_stable_mark: Option<f64>,
+) -> Option<f64> {
+    if let Some(stable_mark) = resolve_stable_mark(snapshot) {
+        return Some(stable_mark);
+    }
+
+    let Some(snapshot) = snapshot else {
+        return previous_stable_mark;
+    };
+
+    let positive_mid = snapshot.mid_price.filter(|price| *price > 0.0);
+    let best_bid = snapshot.bids.first().map(|level| level.price as f64);
+    let best_ask = snapshot.asks.first().map(|level| level.price as f64);
+
+    if previous_stable_mark.is_some() {
+        previous_stable_mark
+    } else {
+        positive_mid.or(best_bid).or(best_ask)
+    }
+}
+
 fn build_timeline_row(
     tick: &TickSnapshot,
     orders_flat: &[FlatOrderRow],
     own_trades_tick: &IndexMap<String, Vec<Trade>>,
     market_trades_next: &IndexMap<String, Vec<Trade>>,
     position: &IndexMap<String, i64>,
+    mark_prices: &IndexMap<String, f64>,
     pnl_by_product: &IndexMap<String, f64>,
     pnl_total: f64,
     sandbox_log: &str,
@@ -894,8 +1331,9 @@ fn build_timeline_row(
                 ),
                 (
                     "mid_price",
-                    snapshot
-                        .mid_price
+                    mark_prices
+                        .get(product)
+                        .copied()
                         .map(json_f64)
                         .transpose()?
                         .unwrap_or(Value::Null),
@@ -953,6 +1391,7 @@ fn format_activity_row(
     tick: &TickSnapshot,
     product: &str,
     snapshot: Option<&crate::model::ProductSnapshot>,
+    mark_price: Option<f64>,
     pnl: f64,
 ) -> String {
     let bid_prices: Vec<String> = snapshot
@@ -1005,10 +1444,7 @@ fn format_activity_row(
         get_or_empty(&ask_volumes, 1),
         get_or_empty(&ask_prices, 2),
         get_or_empty(&ask_volumes, 2),
-        snapshot
-            .and_then(|row| row.mid_price)
-            .map(python_float_string)
-            .unwrap_or_default(),
+        mark_price.map(python_float_string).unwrap_or_default(),
         python_float_string(rounded_pnl),
     ]
     .join(";")
@@ -1261,9 +1697,9 @@ fn indexmap_f64_to_json(values: &IndexMap<String, f64>) -> Result<IndexMap<Strin
 mod tests {
     use super::{
         BookLevel, display_path, eligible_trade_price, enforce_position_limits,
-        market_trade_duplicates_touch, match_orders_for_symbol, project_root, run_backtest,
-        python_round_to_digits, python_round_to_i64, queue_penetration_available,
-        slippage_adjusted_price,
+        market_trade_duplicates_touch, match_orders_for_symbol,
+        match_orders_for_symbol_raw_csv_tape, project_root, python_round_to_digits,
+        python_round_to_i64, queue_penetration_available, run_backtest, slippage_adjusted_price,
     };
     use crate::model::{
         MarketTrade, MatchingConfig, NormalizedDataset, ObservationState, Order, OrderBookLevel,
@@ -1381,6 +1817,184 @@ mod tests {
         assert_eq!(order_rows[0].symbol, "TOMATOES");
         assert_eq!(order_rows[0].price, 100);
         assert_eq!(order_rows[0].quantity, 4);
+    }
+
+    #[test]
+    fn raw_csv_same_price_priority_prefers_visible_book_before_submission_remainder() {
+        let orders = vec![Order {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: 5,
+        }];
+        let mut bids = vec![BookLevel {
+            price: 100,
+            volume: 2,
+        }];
+        let mut asks = vec![BookLevel {
+            price: 105,
+            volume: 5,
+        }];
+        let market_trades = vec![MarketTrade {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: 6,
+            buyer: "BOT_BUYER".to_string(),
+            seller: "BOT_SELLER".to_string(),
+            timestamp: 0,
+        }];
+        let mut position = IndexMap::new();
+        let mut cash = IndexMap::new();
+        let config = MatchingConfig::default();
+
+        let (own_trades, public_market_trades, _) = match_orders_for_symbol_raw_csv_tape(
+            "TOMATOES",
+            orders,
+            &mut bids,
+            &mut asks,
+            &market_trades,
+            &mut position,
+            &mut cash,
+            0,
+            &config,
+            false,
+        );
+
+        assert_eq!(own_trades.len(), 1);
+        assert_eq!(own_trades[0].price, 100);
+        assert_eq!(own_trades[0].quantity, 4);
+        assert!(public_market_trades.is_empty());
+        assert_eq!(position.get("TOMATOES").copied(), Some(4));
+    }
+
+    #[test]
+    fn raw_csv_visible_bid_can_fully_block_submission_bid_fill() {
+        let orders = vec![Order {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: 4,
+        }];
+        let mut bids = vec![BookLevel {
+            price: 100,
+            volume: 6,
+        }];
+        let mut asks = vec![];
+        let market_trades = vec![MarketTrade {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: 4,
+            buyer: "BOT_BUYER".to_string(),
+            seller: "BOT_SELLER".to_string(),
+            timestamp: 0,
+        }];
+        let mut position = IndexMap::new();
+        let mut cash = IndexMap::new();
+        let config = MatchingConfig::default();
+
+        let (own_trades, public_market_trades, _) = match_orders_for_symbol_raw_csv_tape(
+            "TOMATOES",
+            orders,
+            &mut bids,
+            &mut asks,
+            &market_trades,
+            &mut position,
+            &mut cash,
+            0,
+            &config,
+            false,
+        );
+
+        assert!(own_trades.is_empty());
+        assert!(public_market_trades.is_empty());
+        assert_eq!(position.get("TOMATOES").copied(), None);
+    }
+
+    #[test]
+    fn raw_csv_visible_ask_can_fully_block_submission_ask_fill() {
+        let orders = vec![Order {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: -4,
+        }];
+        let mut bids = vec![];
+        let mut asks = vec![BookLevel {
+            price: 100,
+            volume: 6,
+        }];
+        let market_trades = vec![MarketTrade {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: 4,
+            buyer: "BOT_BUYER".to_string(),
+            seller: "BOT_SELLER".to_string(),
+            timestamp: 0,
+        }];
+        let mut position = IndexMap::new();
+        let mut cash = IndexMap::new();
+        let config = MatchingConfig::default();
+
+        let (own_trades, public_market_trades, _) = match_orders_for_symbol_raw_csv_tape(
+            "TOMATOES",
+            orders,
+            &mut bids,
+            &mut asks,
+            &market_trades,
+            &mut position,
+            &mut cash,
+            0,
+            &config,
+            false,
+        );
+
+        assert!(own_trades.is_empty());
+        assert!(public_market_trades.is_empty());
+        assert_eq!(position.get("TOMATOES").copied(), None);
+    }
+
+    #[test]
+    fn non_csv_trade_history_replay_keeps_queue_penetration_behavior() {
+        let orders = vec![Order {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: 4,
+        }];
+        let mut bids = Vec::new();
+        let mut asks = vec![BookLevel {
+            price: 105,
+            volume: 1,
+        }];
+        let market_trades = vec![MarketTrade {
+            symbol: "TOMATOES".to_string(),
+            price: 100,
+            quantity: 5,
+            buyer: "BOT_BUYER".to_string(),
+            seller: "BOT_SELLER".to_string(),
+            timestamp: 0,
+        }];
+        let mut position = IndexMap::new();
+        let mut cash = IndexMap::new();
+        let config = MatchingConfig {
+            queue_penetration: 0.5,
+            ..MatchingConfig::default()
+        };
+
+        let (own_trades, public_market_trades, _) = match_orders_for_symbol(
+            "TOMATOES",
+            orders,
+            &mut bids,
+            &mut asks,
+            &market_trades,
+            &mut position,
+            &mut cash,
+            0,
+            &config,
+            false,
+        );
+
+        assert_eq!(own_trades.len(), 1);
+        assert_eq!(own_trades[0].price, 100);
+        assert_eq!(own_trades[0].quantity, 2);
+        assert!(public_market_trades.is_empty());
+        assert_eq!(position.get("TOMATOES").copied(), Some(2));
     }
 
     #[test]
@@ -1604,6 +2218,331 @@ class Trader:
     }
 
     #[test]
+    fn empty_book_carries_forward_last_mark_for_pnl_and_activity_log() {
+        let unique = format!(
+            "runner-empty-book-mark-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let output_root = std::env::temp_dir().join(&unique);
+        fs::create_dir_all(&output_root).expect("temp output root should exist");
+        let trader_file = output_root.join("empty_book_mark_trader.py");
+        fs::write(
+            &trader_file,
+            r#"from datamodel import Order, TradingState
+
+class Trader:
+    def run(self, state: TradingState):
+        if state.timestamp == 0:
+            return {"EMERALDS": [Order("EMERALDS", 10000, 1)]}, 0, ""
+        return {}, 0, ""
+"#,
+        )
+        .expect("temp trader file should be written");
+
+        let dataset_override = NormalizedDataset {
+            schema_version: "test".to_string(),
+            competition_version: "test".to_string(),
+            dataset_id: "empty-book-mark-test".to_string(),
+            source: "test".to_string(),
+            products: vec!["EMERALDS".to_string()],
+            metadata: IndexMap::new(),
+            ticks: vec![
+                TickSnapshot {
+                    timestamp: 0,
+                    day: Some(-1),
+                    products: IndexMap::from([(
+                        "EMERALDS".to_string(),
+                        ProductSnapshot {
+                            product: "EMERALDS".to_string(),
+                            bids: vec![OrderBookLevel {
+                                price: 9999,
+                                volume: 1,
+                            }],
+                            asks: vec![OrderBookLevel {
+                                price: 10000,
+                                volume: 1,
+                            }],
+                            mid_price: Some(9999.5),
+                        },
+                    )]),
+                    market_trades: IndexMap::new(),
+                    observations: ObservationState::default(),
+                },
+                TickSnapshot {
+                    timestamp: 100,
+                    day: Some(-1),
+                    products: IndexMap::from([(
+                        "EMERALDS".to_string(),
+                        ProductSnapshot {
+                            product: "EMERALDS".to_string(),
+                            bids: vec![],
+                            asks: vec![],
+                            mid_price: Some(0.0),
+                        },
+                    )]),
+                    market_trades: IndexMap::new(),
+                    observations: ObservationState::default(),
+                },
+            ],
+        };
+
+        let request = RunRequest {
+            trader_file,
+            dataset_file: project_root().join("datasets/tutorial/prices_round_0_day_-1.csv"),
+            dataset_override: Some(dataset_override),
+            day: None,
+            matching: MatchingConfig::default(),
+            run_id: Some("empty-book-mark-check".to_string()),
+            output_root: output_root.clone(),
+            persist: false,
+            write_metrics: true,
+            write_bundle: true,
+            write_submission_log: true,
+            materialize_artifacts: true,
+            metadata_overrides: Default::default(),
+        };
+
+        let output = run_backtest(&request).expect("backtest should succeed");
+        let artifacts = output
+            .artifacts
+            .as_ref()
+            .expect("artifacts should be available for materialized runs");
+        let bundle: Value =
+            serde_json::from_slice(&artifacts.bundle_json).expect("bundle JSON should parse");
+        let timeline = bundle["timeline"]
+            .as_array()
+            .expect("timeline should be an array");
+        let second_tick = &timeline[1];
+
+        assert_eq!(
+            second_tick["products"]["EMERALDS"]["mid_price"].as_f64(),
+            Some(9999.5)
+        );
+        assert_eq!(
+            second_tick["pnl_by_product"]["EMERALDS"].as_f64(),
+            Some(-0.5)
+        );
+
+        let submission_log: Value = serde_json::from_slice(&artifacts.submission_log)
+            .expect("submission log JSON should parse");
+        let activity_line = submission_log["activitiesLog"]
+            .as_str()
+            .expect("activitiesLog should be a string")
+            .lines()
+            .find(|line| line.starts_with("-1;100;EMERALDS;"))
+            .expect("activity row for the empty-book tick should exist");
+        let fields: Vec<&str> = activity_line.split(';').collect();
+        assert_eq!(fields[15], "9999.5");
+        assert_eq!(fields[16], "-0.5");
+
+        fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
+    }
+
+    #[test]
+    fn one_sided_book_carries_forward_last_stable_mid() {
+        let unique = format!(
+            "runner-one-sided-mark-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let output_root = std::env::temp_dir().join(&unique);
+        fs::create_dir_all(&output_root).expect("temp output root should exist");
+        let trader_file = output_root.join("one_sided_mark_trader.py");
+        fs::write(
+            &trader_file,
+            r#"from datamodel import Order, TradingState
+
+class Trader:
+    def run(self, state: TradingState):
+        if state.timestamp == 0:
+            return {"EMERALDS": [Order("EMERALDS", 10000, 1)]}, 0, ""
+        return {}, 0, ""
+"#,
+        )
+        .expect("temp trader file should be written");
+
+        let dataset_override = NormalizedDataset {
+            schema_version: "test".to_string(),
+            competition_version: "test".to_string(),
+            dataset_id: "one-sided-mark-test".to_string(),
+            source: "test".to_string(),
+            products: vec!["EMERALDS".to_string()],
+            metadata: IndexMap::new(),
+            ticks: vec![
+                TickSnapshot {
+                    timestamp: 0,
+                    day: Some(-1),
+                    products: IndexMap::from([(
+                        "EMERALDS".to_string(),
+                        ProductSnapshot {
+                            product: "EMERALDS".to_string(),
+                            bids: vec![OrderBookLevel {
+                                price: 9999,
+                                volume: 1,
+                            }],
+                            asks: vec![OrderBookLevel {
+                                price: 10000,
+                                volume: 1,
+                            }],
+                            mid_price: Some(9999.5),
+                        },
+                    )]),
+                    market_trades: IndexMap::new(),
+                    observations: ObservationState::default(),
+                },
+                TickSnapshot {
+                    timestamp: 100,
+                    day: Some(-1),
+                    products: IndexMap::from([(
+                        "EMERALDS".to_string(),
+                        ProductSnapshot {
+                            product: "EMERALDS".to_string(),
+                            bids: vec![OrderBookLevel {
+                                price: 10020,
+                                volume: 1,
+                            }],
+                            asks: vec![],
+                            mid_price: Some(0.0),
+                        },
+                    )]),
+                    market_trades: IndexMap::new(),
+                    observations: ObservationState::default(),
+                },
+            ],
+        };
+
+        let request = RunRequest {
+            trader_file,
+            dataset_file: project_root().join("datasets/tutorial/prices_round_0_day_-1.csv"),
+            dataset_override: Some(dataset_override),
+            day: None,
+            matching: MatchingConfig::default(),
+            run_id: Some("one-sided-mark-check".to_string()),
+            output_root: output_root.clone(),
+            persist: false,
+            write_metrics: true,
+            write_bundle: true,
+            write_submission_log: false,
+            materialize_artifacts: true,
+            metadata_overrides: Default::default(),
+        };
+
+        let output = run_backtest(&request).expect("backtest should succeed");
+        let artifacts = output
+            .artifacts
+            .as_ref()
+            .expect("artifacts should be available for materialized runs");
+        let bundle: Value =
+            serde_json::from_slice(&artifacts.bundle_json).expect("bundle JSON should parse");
+        let timeline = bundle["timeline"]
+            .as_array()
+            .expect("timeline should be an array");
+        let second_tick = &timeline[1];
+
+        assert_eq!(
+            second_tick["products"]["EMERALDS"]["mid_price"].as_f64(),
+            Some(9999.5)
+        );
+        assert_eq!(
+            second_tick["pnl_by_product"]["EMERALDS"].as_f64(),
+            Some(-0.5)
+        );
+
+        fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
+    }
+
+    #[test]
+    fn first_one_sided_tick_bootstraps_mark_from_visible_side() {
+        let unique = format!(
+            "runner-first-one-sided-mark-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let output_root = std::env::temp_dir().join(&unique);
+        fs::create_dir_all(&output_root).expect("temp output root should exist");
+        let trader_file = output_root.join("first_one_sided_mark_trader.py");
+        fs::write(
+            &trader_file,
+            r#"from datamodel import Order, TradingState
+
+class Trader:
+    def run(self, state: TradingState):
+        return {"EMERALDS": [Order("EMERALDS", 10000, 1)]}, 0, ""
+"#,
+        )
+        .expect("temp trader file should be written");
+
+        let dataset_override = NormalizedDataset {
+            schema_version: "test".to_string(),
+            competition_version: "test".to_string(),
+            dataset_id: "first-one-sided-mark-test".to_string(),
+            source: "test".to_string(),
+            products: vec!["EMERALDS".to_string()],
+            metadata: IndexMap::new(),
+            ticks: vec![TickSnapshot {
+                timestamp: 0,
+                day: Some(-1),
+                products: IndexMap::from([(
+                    "EMERALDS".to_string(),
+                    ProductSnapshot {
+                        product: "EMERALDS".to_string(),
+                        bids: vec![OrderBookLevel {
+                            price: 10020,
+                            volume: 1,
+                        }],
+                        asks: vec![],
+                        mid_price: Some(0.0),
+                    },
+                )]),
+                market_trades: IndexMap::new(),
+                observations: ObservationState::default(),
+            }],
+        };
+
+        let request = RunRequest {
+            trader_file,
+            dataset_file: project_root().join("datasets/tutorial/prices_round_0_day_-1.csv"),
+            dataset_override: Some(dataset_override),
+            day: None,
+            matching: MatchingConfig::default(),
+            run_id: Some("first-one-sided-mark-check".to_string()),
+            output_root: output_root.clone(),
+            persist: false,
+            write_metrics: true,
+            write_bundle: true,
+            write_submission_log: false,
+            materialize_artifacts: true,
+            metadata_overrides: Default::default(),
+        };
+
+        let output = run_backtest(&request).expect("backtest should succeed");
+        let artifacts = output
+            .artifacts
+            .as_ref()
+            .expect("artifacts should be available for materialized runs");
+        let bundle: Value =
+            serde_json::from_slice(&artifacts.bundle_json).expect("bundle JSON should parse");
+        let timeline = bundle["timeline"]
+            .as_array()
+            .expect("timeline should be an array");
+        let first_tick = &timeline[0];
+
+        assert_eq!(
+            first_tick["products"]["EMERALDS"]["mid_price"].as_f64(),
+            Some(10020.0)
+        );
+
+        fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
+    }
+
+    #[test]
     fn consumed_market_trade_is_removed_from_bundle_timeline() {
         let unique = format!(
             "runner-market-consume-{}",
@@ -1729,6 +2668,247 @@ class Trader:
         assert_eq!(trade_history.len(), 1);
         assert_eq!(trade_history[0]["buyer"].as_str(), Some("SUBMISSION"));
         assert_eq!(trade_history[0]["price"].as_i64(), Some(4987));
+
+        fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
+    }
+
+    #[test]
+    fn raw_csv_submission_crosses_book_then_resting_order_is_hit_by_tape() {
+        let unique = format!(
+            "runner-raw-csv-book-then-tape-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let output_root = std::env::temp_dir().join(&unique);
+        fs::create_dir_all(&output_root).expect("temp output root should exist");
+        let trader_file = output_root.join("raw_csv_book_then_tape_trader.py");
+        fs::write(
+            &trader_file,
+            r#"from datamodel import Order, TradingState
+
+class Trader:
+    def run(self, state: TradingState):
+        return {"TOMATOES": [Order("TOMATOES", 10005, 5)]}, 0, ""
+"#,
+        )
+        .expect("temp trader file should be written");
+
+        let dataset_override = NormalizedDataset {
+            schema_version: "test".to_string(),
+            competition_version: "test".to_string(),
+            dataset_id: "raw-csv-book-then-tape".to_string(),
+            source: "test".to_string(),
+            products: vec!["TOMATOES".to_string()],
+            metadata: IndexMap::from([(
+                "source_format".to_string(),
+                Value::String("imc_csv".to_string()),
+            )]),
+            ticks: vec![TickSnapshot {
+                timestamp: 0,
+                day: Some(-1),
+                products: IndexMap::from([(
+                    "TOMATOES".to_string(),
+                    ProductSnapshot {
+                        product: "TOMATOES".to_string(),
+                        bids: vec![],
+                        asks: vec![OrderBookLevel {
+                            price: 10000,
+                            volume: 3,
+                        }],
+                        mid_price: Some(10000.0),
+                    },
+                )]),
+                market_trades: IndexMap::from([(
+                    "TOMATOES".to_string(),
+                    vec![MarketTrade {
+                        symbol: "TOMATOES".to_string(),
+                        price: 9990,
+                        quantity: 5,
+                        buyer: "BOT_BUYER".to_string(),
+                        seller: "BOT_SELLER".to_string(),
+                        timestamp: 0,
+                    }],
+                )]),
+                observations: ObservationState::default(),
+            }],
+        };
+
+        let request = RunRequest {
+            trader_file,
+            dataset_file: project_root().join("datasets/tutorial/prices_round_0_day_-1.csv"),
+            dataset_override: Some(dataset_override),
+            day: None,
+            matching: MatchingConfig::default(),
+            run_id: Some("raw-csv-book-then-tape-check".to_string()),
+            output_root: output_root.clone(),
+            persist: false,
+            write_metrics: true,
+            write_bundle: true,
+            write_submission_log: true,
+            materialize_artifacts: true,
+            metadata_overrides: Default::default(),
+        };
+
+        let output = run_backtest(&request).expect("backtest should succeed");
+        let artifacts = output
+            .artifacts
+            .as_ref()
+            .expect("artifacts should be available for materialized runs");
+        let bundle: Value =
+            serde_json::from_slice(&artifacts.bundle_json).expect("bundle JSON should parse");
+        let timeline = bundle["timeline"]
+            .as_array()
+            .expect("timeline should be an array");
+        let tick = timeline.first().expect("timeline should include one tick");
+
+        let own_trades = tick["own_trades"]
+            .as_array()
+            .expect("own_trades should be an array");
+        assert_eq!(own_trades.len(), 2);
+        assert_eq!(own_trades[0]["price"].as_i64(), Some(10000));
+        assert_eq!(own_trades[0]["quantity"].as_i64(), Some(3));
+        assert_eq!(own_trades[1]["price"].as_i64(), Some(10005));
+        assert_eq!(own_trades[1]["quantity"].as_i64(), Some(2));
+
+        let public_trades = tick["market_trades"]
+            .as_array()
+            .expect("market_trades should be an array");
+        assert_eq!(public_trades.len(), 1);
+        assert_eq!(public_trades[0]["price"].as_i64(), Some(9990));
+        assert_eq!(public_trades[0]["quantity"].as_i64(), Some(3));
+
+        fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
+    }
+
+    #[test]
+    fn raw_csv_residual_public_tape_is_carried_to_next_tick_and_logged() {
+        let unique = format!(
+            "runner-raw-csv-residual-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let output_root = std::env::temp_dir().join(&unique);
+        fs::create_dir_all(&output_root).expect("temp output root should exist");
+        let trader_file = output_root.join("raw_csv_residual_trader.py");
+        fs::write(
+            &trader_file,
+            r#"from datamodel import Order, TradingState
+
+class Trader:
+    def run(self, state: TradingState):
+        total_prev = sum(trade.quantity for trades in state.market_trades.values() for trade in trades)
+        print(f"prev={total_prev}")
+        if state.timestamp == 0:
+            return {"TOMATOES": [Order("TOMATOES", 10005, 5)]}, 0, ""
+        return {}, 0, ""
+"#,
+        )
+        .expect("temp trader file should be written");
+
+        let dataset_override = NormalizedDataset {
+            schema_version: "test".to_string(),
+            competition_version: "test".to_string(),
+            dataset_id: "raw-csv-residual".to_string(),
+            source: "test".to_string(),
+            products: vec!["TOMATOES".to_string()],
+            metadata: IndexMap::from([(
+                "source_format".to_string(),
+                Value::String("imc_csv".to_string()),
+            )]),
+            ticks: vec![
+                TickSnapshot {
+                    timestamp: 0,
+                    day: Some(-1),
+                    products: IndexMap::from([(
+                        "TOMATOES".to_string(),
+                        ProductSnapshot {
+                            product: "TOMATOES".to_string(),
+                            bids: vec![],
+                            asks: vec![],
+                            mid_price: Some(10000.0),
+                        },
+                    )]),
+                    market_trades: IndexMap::from([(
+                        "TOMATOES".to_string(),
+                        vec![MarketTrade {
+                            symbol: "TOMATOES".to_string(),
+                            price: 10000,
+                            quantity: 10,
+                            buyer: "BOT_BUYER".to_string(),
+                            seller: "BOT_SELLER".to_string(),
+                            timestamp: 0,
+                        }],
+                    )]),
+                    observations: ObservationState::default(),
+                },
+                TickSnapshot {
+                    timestamp: 100,
+                    day: Some(-1),
+                    products: IndexMap::from([(
+                        "TOMATOES".to_string(),
+                        ProductSnapshot {
+                            product: "TOMATOES".to_string(),
+                            bids: vec![],
+                            asks: vec![],
+                            mid_price: Some(10000.0),
+                        },
+                    )]),
+                    market_trades: IndexMap::new(),
+                    observations: ObservationState::default(),
+                },
+            ],
+        };
+
+        let request = RunRequest {
+            trader_file,
+            dataset_file: project_root().join("datasets/tutorial/prices_round_0_day_-1.csv"),
+            dataset_override: Some(dataset_override),
+            day: None,
+            matching: MatchingConfig::default(),
+            run_id: Some("raw-csv-residual-check".to_string()),
+            output_root: output_root.clone(),
+            persist: false,
+            write_metrics: true,
+            write_bundle: true,
+            write_submission_log: true,
+            materialize_artifacts: true,
+            metadata_overrides: Default::default(),
+        };
+
+        let output = run_backtest(&request).expect("backtest should succeed");
+        let artifacts = output
+            .artifacts
+            .as_ref()
+            .expect("artifacts should be available for materialized runs");
+        let bundle: Value =
+            serde_json::from_slice(&artifacts.bundle_json).expect("bundle JSON should parse");
+        let timeline = bundle["timeline"]
+            .as_array()
+            .expect("timeline should be an array");
+
+        assert_eq!(
+            timeline[0]["market_trades"]
+                .as_array()
+                .expect("market_trades should be an array")[0]["quantity"]
+                .as_i64(),
+            Some(5)
+        );
+        assert_eq!(timeline[1]["algorithm_logs"].as_str(), Some("prev=5"));
+
+        let submission_log: Value = serde_json::from_slice(&artifacts.submission_log)
+            .expect("submission log JSON should parse");
+        let trade_history = submission_log["tradeHistory"]
+            .as_array()
+            .expect("tradeHistory should be an array");
+        assert_eq!(trade_history.len(), 2);
+        assert_eq!(trade_history[0]["price"].as_i64(), Some(10000));
+        assert_eq!(trade_history[0]["quantity"].as_i64(), Some(5));
+        assert_eq!(trade_history[1]["price"].as_i64(), Some(10005));
+        assert_eq!(trade_history[1]["quantity"].as_i64(), Some(5));
 
         fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
     }

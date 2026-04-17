@@ -316,11 +316,20 @@ fn load_price_csv_dataset(path: &Path) -> Result<NormalizedDataset> {
 
     let activities_log = fs::read_to_string(path)
         .with_context(|| format!("failed to read prices CSV {}", path.display()))?;
-    let trade_history = paired_trades_csv(path)
-        .filter(|trade_path| trade_path.is_file())
-        .map(|trade_path| load_trades_csv(&trade_path))
-        .transpose()?
-        .unwrap_or_default()
+    let trade_path = paired_trades_csv(path).with_context(|| {
+        format!(
+            "unsupported CSV input {}; expected a prices_*.csv filename",
+            path.display()
+        )
+    })?;
+    if !trade_path.is_file() {
+        bail!(
+            "missing paired trades CSV for {}; expected {}",
+            path.display(),
+            trade_path.display()
+        );
+    }
+    let trade_history = load_trades_csv(&trade_path)?
         .into_iter()
         .map(|trade| SubmissionTradeHistoryRow { day: None, trade })
         .collect::<Vec<_>>();
@@ -638,9 +647,9 @@ fn path_string(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::load_submission_value_dataset;
+    use super::{load_dataset, load_submission_value_dataset};
     use serde_json::json;
-    use std::path::Path;
+    use std::{fs, path::Path};
 
     #[test]
     fn submission_trade_history_uses_day_when_present() {
@@ -682,5 +691,36 @@ mod tests {
         assert_eq!(dataset.ticks[1].day, Some(-1));
         assert_eq!(dataset.ticks[0].market_trades["EMERALDS"][0].quantity, 1);
         assert_eq!(dataset.ticks[1].market_trades["EMERALDS"][0].quantity, 2);
+    }
+
+    #[test]
+    fn missing_paired_trades_csv_is_an_error() {
+        let unique = format!(
+            "model-missing-trades-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let scratch = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&scratch).expect("scratch dir should exist");
+
+        let prices_path = scratch.join("prices_round_1_day_0.csv");
+        fs::write(
+            &prices_path,
+            concat!(
+                "day;timestamp;product;bid_price_1;bid_volume_1;bid_price_2;bid_volume_2;bid_price_3;bid_volume_3;",
+                "ask_price_1;ask_volume_1;ask_price_2;ask_volume_2;ask_price_3;ask_volume_3;mid_price;profit_and_loss\n",
+                "0;0;EMERALDS;9999;5;;;;;10001;5;;;;;10000.0;0.0\n"
+            ),
+        )
+        .expect("prices csv should be written");
+
+        let error = load_dataset(&prices_path).expect_err("missing paired trades should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("missing paired trades CSV"));
+        assert!(message.contains("trades_round_1_day_0.csv"));
+
+        fs::remove_dir_all(scratch).expect("scratch dir should be cleaned up");
     }
 }
