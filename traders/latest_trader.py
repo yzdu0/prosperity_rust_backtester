@@ -1,5 +1,5 @@
 from datamodel import OrderDepth, TradingState, Order
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 import json
 
 # ─────────────────────────────────────────
@@ -37,12 +37,8 @@ class Trader:
         self.best_ask_ever: Optional[float] = None
         self.timestep: int = 0
 
-    def update_globals(self, osmium_clip, snipe_position_limit, window_size, deviation_multiplier):
-        global OSMIUM_CLIP, SNIPE_POSITION_LIMIT, WINDOW_SIZE, DEVIATION_MULTIPLIER
-        OSMIUM_CLIP = osmium_clip
-        SNIPE_POSITION_LIMIT = snipe_position_limit
-        WINDOW_SIZE = window_size
-        DEVIATION_MULTIPLIER = deviation_multiplier
+    def update_globals(self, updates: Dict[str, Any]):
+        globals().update(updates)
 
     # ── internal helpers ────────────────────────────────────────────────
 

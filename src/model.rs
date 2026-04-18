@@ -115,6 +115,8 @@ pub struct MetadataOverrides {
     pub recorded_dataset_path: Option<String>,
 }
 
+pub type TraderGlobals = IndexMap<String, Value>;
+
 #[derive(Debug, Clone)]
 pub struct RunRequest {
     pub trader_file: PathBuf,
@@ -130,15 +132,7 @@ pub struct RunRequest {
     pub write_submission_log: bool,
     pub materialize_artifacts: bool,
     pub metadata_overrides: MetadataOverrides,
-    pub OSMIUM_CLIP: i64,
-    pub SNIPE_POSITION_LIMIT: i64,
-    pub WINDOW_SIZE: i64,
-    pub DEVIATION_MULTIPLIER: i64,
-    /*
-OSMIUM_CLIP          = 10      # max qty per side per tick (≤ max observed market order)
-SNIPE_POSITION_LIMIT = 40      # max net position built purely through sniping
-WINDOW_SIZE          = 25      # rolling-average window for OSMIUM fair value
-    */
+    pub trader_globals: TraderGlobals,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

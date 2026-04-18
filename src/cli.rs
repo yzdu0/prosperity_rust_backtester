@@ -10,7 +10,8 @@ use serde_json::Value;
 
 use crate::jsonfmt::{object, pretty_json_bytes};
 use crate::model::{
-    MatchingConfig, MetadataOverrides, NormalizedDataset, RunRequest, load_dataset,
+    MatchingConfig, MetadataOverrides, NormalizedDataset, RunRequest, TraderGlobals,
+    load_dataset,
     materialize_submission_json_if_missing,
 };
 use crate::runner::{default_output_root, display_path, project_root, run_backtest};
@@ -49,8 +50,7 @@ struct Args {
     #[arg(long, value_enum, default_value_t = ProductDisplayMode::Summary)]
     products: ProductDisplayMode,
 }
-// PLEASE WORK!!!
-pub fn run(osmium_clip: i64, snipe: i64, window_size: i64, deviation: i64 ) -> Result<f64> {
+pub fn run(trader_globals: &TraderGlobals) -> Result<f64> {
     let args = Args::parse();
     let trader = resolve_trader(args.trader.as_deref())?;
     let dataset = resolve_dataset_input(args.dataset.as_deref())?;
@@ -100,10 +100,7 @@ pub fn run(osmium_clip: i64, snipe: i64, window_size: i64, deviation: i64 ) -> R
             write_submission_log,
             materialize_artifacts,
             metadata_overrides: plan.metadata_overrides.clone(),
-            OSMIUM_CLIP: osmium_clip,
-            SNIPE_POSITION_LIMIT: snipe, 
-            WINDOW_SIZE: window_size,
-            DEVIATION_MULTIPLIER: deviation,
+            trader_globals: trader_globals.clone(),
         })?;
 
         let run_dir_label = if let Some(flat_dir) = &flat_dir {

@@ -8,11 +8,12 @@ use pyo3::ffi::c_str;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyModule, PyTuple};
 
-use crate::model::{Order, TickSnapshot, Trade};
+use crate::model::{Order, TickSnapshot, Trade, TraderGlobals};
 
 const PY_HELPER: &str = r#"
 import importlib.util
 import io
+import json
 import sys
 from contextlib import redirect_stdout
 
@@ -69,6 +70,24 @@ def load_trader_instance(module_name, trader_file, datamodel_module):
         raise RuntimeError("Trader file does not define a Trader class")
 
     return module.Trader()
+
+
+def update_trader_globals(trader, updates_json):
+    updates = json.loads(updates_json)
+    update_fn = getattr(trader, "update_globals", None)
+    if callable(update_fn):
+        try:
+            update_fn(updates)
+            return
+        except TypeError:
+            pass
+
+    module = sys.modules.get(trader.__class__.__module__)
+    if module is None:
+        raise RuntimeError("Cannot resolve trader module for global updates")
+
+    for name, value in updates.items():
+        setattr(module, str(name), value)
 
 
 def _build_order_depths(payload):
@@ -419,7 +438,7 @@ impl PythonTrader {
                 datamodel_module.clone(),
             ))?;
             let invoke_fn = helper.getattr("invoke_trader_on_payload")?;
-            let update_globals_fn = trader.getattr("update_globals")?;
+            let update_globals_fn = helper.getattr("update_trader_globals")?;
 
             Ok(Self {
                 trader: trader.unbind(),
@@ -431,16 +450,13 @@ impl PythonTrader {
 
     pub fn update_globals(
         &mut self,
-        osmium_clip: i64,
-        snipe_position_limit: i64,
-        window_size: i64,
-        deviation: i64
+        trader_globals: &TraderGlobals,
     ) -> Result<()> {
         Python::attach(|py| -> Result<()> {
-            self.trader
+            let updates_json = serde_json::to_string(trader_globals)?;
+            self.update_globals_fn
                 .bind(py)
-                .getattr("update_globals")?
-                .call1((osmium_clip, snipe_position_limit, window_size, deviation))?;
+                .call1((self.trader.bind(py), updates_json))?;
             Ok(())
         })
     }
