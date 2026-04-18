@@ -42,7 +42,7 @@ class Trader:
         OSMIUM_CLIP = osmium_clip
         SNIPE_POSITION_LIMIT = snipe_position_limit
         WINDOW_SIZE = window_size
-        DEVIATION_MULTIPLIER
+        DEVIATION_MULTIPLIER = deviation_multiplier
 
     # ── internal helpers ────────────────────────────────────────────────
 

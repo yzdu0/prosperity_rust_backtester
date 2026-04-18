@@ -49,8 +49,8 @@ struct Args {
     #[arg(long, value_enum, default_value_t = ProductDisplayMode::Summary)]
     products: ProductDisplayMode,
 }
-
-pub fn run(osmium_clip: i64, snipe: i64, window_size: i64, deviation: i64) -> Result<f64> {
+// PLEASE WORK!!!
+pub fn run(osmium_clip: i64, snipe: i64, window_size: i64, deviation: i64 ) -> Result<f64> {
     let args = Args::parse();
     let trader = resolve_trader(args.trader.as_deref())?;
     let dataset = resolve_dataset_input(args.dataset.as_deref())?;
