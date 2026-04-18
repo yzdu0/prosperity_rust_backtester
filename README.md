@@ -12,26 +12,18 @@ Everything needed for the default backtest flow now lives inside this directory.
 
 1. Modify your `latest_trader.py`:
 ```python
- def update_globals(self, osmium_clip, snipe_position_limit, window_size, deviation_multiplier):
-        global OSMIUM_CLIP, SNIPE_POSITION_LIMIT, WINDOW_SIZE, DEVIATION_MULTIPLIER
-        OSMIUM_CLIP = osmium_clip
-        SNIPE_POSITION_LIMIT = snipe_position_limit
-        WINDOW_SIZE = window_size
-        DEVIATION_MULTIPLIER
+ def _load_state(self, raw: str) -> None:
 ```
 
-2. Modify `src/model.rs`:
+2. Modify `src/main.rs`:
 ```rust
-#[derive(Debug, Clone)]
-pub struct GridConfig {
-    pub OSMIUM_CLIP: i64,
-    pub SNIPE_POSITION_LIMIT: i64,
-    pub WINDOW_SIZE: i64,
-    pub DEVIATION_MULTIPLIER: i64,
-}
+let sweep_parameters = vec![
+        ("OSMIUM_CLIP", values![8, 10, 12, 14, 16]),
+        ("SNIPE_POSITION_LIMIT", values![20, 25, 30]),
+        ("WINDOW_SIZE", values![5, 10, 15, 20]),
+        ("DEVIATION_MULTIPLIER", values![1, 2, 5, 8, 10]),
+];
 ```
-
-3. Modify `src/main.rs` as required.
 
 ## Setup
 
