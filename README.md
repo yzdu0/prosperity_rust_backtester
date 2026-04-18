@@ -12,7 +12,7 @@ Everything needed for the default backtest flow now lives inside this directory.
 
 1. Modify your `latest_trader.py`:
 ```python
- def _load_state(self, raw: str) -> None:
+def update_globals(self, updates: Dict[str, Any]):
 ```
 
 2. Modify `src/main.rs`:
