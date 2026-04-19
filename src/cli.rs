@@ -829,6 +829,15 @@ fn default_run_id_seed() -> String {
     format!("backtest-{millis}")
 }
 
+fn run_day_suffix(day: Option<i64>) -> String {
+    match day {
+        Some(value) if value > 0 => format!("day+{value}"),
+        Some(0) => "day-0".to_string(),
+        Some(value) => format!("day{value}"),
+        None => "all".to_string(),
+    }
+}
+
 fn run_suffix(dataset_file: &Path, day: Option<i64>) -> String {
     if let Some(container) = dataset_container_label(dataset_file) {
         let base = if is_submission_like_path(dataset_file) {
@@ -836,32 +845,33 @@ fn run_suffix(dataset_file: &Path, day: Option<i64>) -> String {
         } else {
             container
         };
-        let day_label = day
-            .map(|value| format!("day-{value}"))
-            .unwrap_or_else(|| "all".to_string());
+        let day_label = run_day_suffix(day);
         return sanitize_identifier(&format!("{base}-{day_label}"));
     }
 
     let stem = dataset_stem_label(dataset_file);
-    let day_label = day
-        .map(|value| format!("day-{value}"))
-        .unwrap_or_else(|| "all".to_string());
+    let day_label = run_day_suffix(day);
     sanitize_identifier(&format!("{}-{day_label}", stem))
 }
 
 fn sanitize_identifier(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
-    let mut last_was_dash = false;
+    let mut last_separator: Option<char> = None;
     for ch in value.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
-            last_was_dash = false;
-        } else if !last_was_dash {
+            last_separator = None;
+        } else if matches!(ch, '-' | '+') {
+            if last_separator != Some(ch) {
+                out.push(ch);
+                last_separator = Some(ch);
+            }
+        } else if last_separator != Some('-') {
             out.push('-');
-            last_was_dash = true;
+            last_separator = Some('-');
         }
     }
-    out.trim_matches('-').to_string()
+    out.trim_matches(|ch| ch == '-' || ch == '+').to_string()
 }
 
 fn candidate_trader_roots() -> Result<Vec<PathBuf>> {
@@ -1835,6 +1845,16 @@ mod tests {
             Some(-1),
         );
         assert_eq!(suffix, "round3-submission-day-1");
+    }
+
+    #[test]
+    fn run_suffix_distinguishes_negative_and_positive_days() {
+        let base = std::path::Path::new("datasets/round2/prices_round_2_day_0.csv");
+        let negative = run_suffix(base, Some(-1));
+        let positive = run_suffix(base, Some(1));
+        assert_eq!(negative, "round2-day-1");
+        assert_eq!(positive, "round2-day+1");
+        assert_ne!(negative, positive);
     }
 
     #[test]

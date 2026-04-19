@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.3 - 2026-04-19
+
+### Fixed
+
+- Encode multi-run day suffixes without collisions so negative and positive day datasets no longer overwrite each other in persisted run directories.
+- Keep human-readable run directory names for round/day splits using `day-1`, `day-0`, and `day+1` formatting.
+
 ## v0.4.2 - 2026-04-19
 
 ### Changed
