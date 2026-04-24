@@ -1590,10 +1590,16 @@ fn build_product_matrix(rows: &[SummaryRow], mode: ProductDisplayMode) -> Produc
 
     let matrix_rows = match mode {
         ProductDisplayMode::Off => Vec::new(),
-        ProductDisplayMode::Full => ranked
-            .into_iter()
-            .map(|(product, values, _)| ProductMatrixRow { product, values })
-            .collect(),
+        ProductDisplayMode::Full => {
+            let mut ordered = ranked.clone();
+            ordered.sort_by(|(left_name, _, _), (right_name, _, _)| {
+                product_display_order(left_name).cmp(&product_display_order(right_name))
+            });
+            ordered
+                .into_iter()
+                .map(|(product, values, _)| ProductMatrixRow { product, values })
+                .collect()
+        }
         ProductDisplayMode::Summary => {
             let shown_count = ranked.len().min(6);
             let mut out: Vec<ProductMatrixRow> = ranked
@@ -1625,6 +1631,23 @@ fn build_product_matrix(rows: &[SummaryRow], mode: ProductDisplayMode) -> Produc
         columns,
         rows: matrix_rows,
     }
+}
+
+fn product_display_order(product: &str) -> (usize, u32, String) {
+    match product {
+        "HYDROGEL_PACK" => (0, 0, product.to_string()),
+        "VELVETFRUIT_EXTRACT" => (1, 0, product.to_string()),
+        _ => voucher_strike(product)
+            .map(|strike| (2, strike, product.to_string()))
+            .unwrap_or_else(|| (1_000, 0, product.to_string())),
+    }
+}
+
+fn voucher_strike(product: &str) -> Option<u32> {
+    product
+        .strip_prefix("VEV_")
+        .or_else(|| product.strip_prefix("VEV"))
+        .and_then(|strike| strike.parse().ok())
 }
 
 fn product_column_label(row: &SummaryRow) -> String {
@@ -1766,17 +1789,21 @@ mod tests {
             day: Some(0),
             tick_count: 0,
             own_trade_count: 0,
-            final_pnl_total: 36.0,
+            final_pnl_total: 78.0,
             final_pnl_by_product: {
                 let mut values = IndexMap::new();
-                values.insert("HYDROGEL_PACK".to_string(), 1.0);
-                values.insert("VELVETFRUIT_EXTRACT".to_string(), 2.0);
-                values.insert("VEV_4000".to_string(), 3.0);
-                values.insert("VEV_4500".to_string(), 4.0);
-                values.insert("VEV_5000".to_string(), 5.0);
-                values.insert("VEV_5100".to_string(), 6.0);
-                values.insert("VEV_5200".to_string(), 7.0);
+                values.insert("VEV_6500".to_string(), 12.0);
+                values.insert("VEV_6000".to_string(), 11.0);
+                values.insert("VEV_5500".to_string(), 10.0);
+                values.insert("VEV_5400".to_string(), 9.0);
                 values.insert("VEV_5300".to_string(), 8.0);
+                values.insert("VEV_5200".to_string(), 7.0);
+                values.insert("VEV_5100".to_string(), 6.0);
+                values.insert("VEV_5000".to_string(), 5.0);
+                values.insert("VEV_4500".to_string(), 4.0);
+                values.insert("VEV_4000".to_string(), 3.0);
+                values.insert("VELVETFRUIT_EXTRACT".to_string(), 2.0);
+                values.insert("HYDROGEL_PACK".to_string(), 1.0);
                 values
             },
             run_dir: None,
@@ -1784,7 +1811,27 @@ mod tests {
 
         let matrix = build_product_matrix(&[row], ProductDisplayMode::Full);
 
-        assert_eq!(matrix.rows.len(), 8);
+        assert_eq!(
+            matrix
+                .rows
+                .iter()
+                .map(|row| row.product.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "HYDROGEL_PACK",
+                "VELVETFRUIT_EXTRACT",
+                "VEV_4000",
+                "VEV_4500",
+                "VEV_5000",
+                "VEV_5100",
+                "VEV_5200",
+                "VEV_5300",
+                "VEV_5400",
+                "VEV_5500",
+                "VEV_6000",
+                "VEV_6500",
+            ]
+        );
         assert!(
             matrix
                 .rows

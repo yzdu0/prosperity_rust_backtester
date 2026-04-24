@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.7 - 2026-04-24
+
+### Changed
+
+- Keep the full CLI product table in competition order, including round 3 products as `HYDROGEL_PACK`, `VELVETFRUIT_EXTRACT`, then `VEV_*` vouchers by increasing strike.
+
 ## v0.4.6 - 2026-04-24
 
 ### Added
