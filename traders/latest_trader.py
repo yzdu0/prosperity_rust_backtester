@@ -24,56 +24,13 @@ DEVIATION_MULTIPLIER = 2.0     # how much extra room to give when sniping based 
 # ─────────────────────────────────────────
 
 class Trader:
-    """
-    IMC Prosperity-compliant Trader.
-
-    Persistent state (osmium FV window, pepper first-ask, timestep) is
-    serialised into traderData so it survives even if the engine
-    re-instantiates the class between ticks.
-    """
-
-    def __init__(self):
-        self.osmium_window: List[float] = [10000.0] * 10
-        self.best_ask_ever: Optional[float] = None
-        self.timestep: int = 0
-
-    def update_globals(self, updates: Dict[str, Any]):
-        globals().update(updates)
-
-    # ── internal helpers ────────────────────────────────────────────────
-
-    def _load_state(self, raw: str) -> None:
-        if not raw:
-            return
-        try:
-            d = json.loads(raw)
-            if "osmium_window" in d:
-                self.osmium_window = d["osmium_window"]
-            if "best_ask_ever" in d:
-                self.best_ask_ever = d["best_ask_ever"]
-            if "timestep" in d:
-                self.timestep = d["timestep"]
-        except Exception:
-            pass  # keep defaults on corrupt state
-
-    def _save_state(self) -> str:
-        return json.dumps({
-            "osmium_window": self.osmium_window,
-            "best_ask_ever": self.best_ask_ever,
-            "timestep": self.timestep,
-        })
-
-    @staticmethod
-    def _best_bid_ask(
-        depth: OrderDepth,
-    ) -> Tuple[Optional[int], Optional[int], int, int]:
-        best_bid = max(depth.buy_orders)  if depth.buy_orders  else None
-        best_ask = min(depth.sell_orders) if depth.sell_orders else None
-        bid_vol  = depth.buy_orders.get(best_bid, 0)   if best_bid else 0
-        ask_vol  = -depth.sell_orders.get(best_ask, 0) if best_ask else 0
-        return best_bid, best_ask, bid_vol, ask_vol
-
-    # ── main entry point ────────────────────────────────────────────────
+    LIMITS = {
+        "EMERALDS": 80,
+        "TOMATOES": 80,
+        "INTARIAN_PEPPER_ROOT": 80,
+        "ASH_COATED_OSMIUM": 80,
+    }
+    QUOTE_SIZE = 5
 
     def run(self, state: TradingState):
         self._load_state(state.traderData)

@@ -47,7 +47,7 @@ struct Args {
     flat: bool,
     #[arg(long = "artifact-mode", value_enum)]
     artifact_mode: Option<ArtifactMode>,
-    #[arg(long, value_enum, default_value_t = ProductDisplayMode::Summary)]
+    #[arg(long, value_enum, default_value_t = ProductDisplayMode::Full)]
     products: ProductDisplayMode,
 }
 pub fn run(trader_globals: &TraderGlobals) -> Result<f64> {
@@ -836,6 +836,15 @@ fn default_run_id_seed() -> String {
     format!("backtest-{millis}")
 }
 
+fn run_day_suffix(day: Option<i64>) -> String {
+    match day {
+        Some(value) if value > 0 => format!("day+{value}"),
+        Some(0) => "day-0".to_string(),
+        Some(value) => format!("day{value}"),
+        None => "all".to_string(),
+    }
+}
+
 fn run_suffix(dataset_file: &Path, day: Option<i64>) -> String {
     if let Some(container) = dataset_container_label(dataset_file) {
         let base = if is_submission_like_path(dataset_file) {
@@ -843,32 +852,33 @@ fn run_suffix(dataset_file: &Path, day: Option<i64>) -> String {
         } else {
             container
         };
-        let day_label = day
-            .map(|value| format!("day-{value}"))
-            .unwrap_or_else(|| "all".to_string());
+        let day_label = run_day_suffix(day);
         return sanitize_identifier(&format!("{base}-{day_label}"));
     }
 
     let stem = dataset_stem_label(dataset_file);
-    let day_label = day
-        .map(|value| format!("day-{value}"))
-        .unwrap_or_else(|| "all".to_string());
+    let day_label = run_day_suffix(day);
     sanitize_identifier(&format!("{}-{day_label}", stem))
 }
 
 fn sanitize_identifier(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
-    let mut last_was_dash = false;
+    let mut last_separator: Option<char> = None;
     for ch in value.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
-            last_was_dash = false;
-        } else if !last_was_dash {
+            last_separator = None;
+        } else if matches!(ch, '-' | '+') {
+            if last_separator != Some(ch) {
+                out.push(ch);
+                last_separator = Some(ch);
+            }
+        } else if last_separator != Some('-') {
             out.push('-');
-            last_was_dash = true;
+            last_separator = Some('-');
         }
     }
-    out.trim_matches('-').to_string()
+    out.trim_matches(|ch| ch == '-' || ch == '+').to_string()
 }
 
 fn candidate_trader_roots() -> Result<Vec<PathBuf>> {
@@ -1587,10 +1597,16 @@ fn build_product_matrix(rows: &[SummaryRow], mode: ProductDisplayMode) -> Produc
 
     let matrix_rows = match mode {
         ProductDisplayMode::Off => Vec::new(),
-        ProductDisplayMode::Full => ranked
-            .into_iter()
-            .map(|(product, values, _)| ProductMatrixRow { product, values })
-            .collect(),
+        ProductDisplayMode::Full => {
+            let mut ordered = ranked.clone();
+            ordered.sort_by(|(left_name, _, _), (right_name, _, _)| {
+                product_display_order(left_name).cmp(&product_display_order(right_name))
+            });
+            ordered
+                .into_iter()
+                .map(|(product, values, _)| ProductMatrixRow { product, values })
+                .collect()
+        }
         ProductDisplayMode::Summary => {
             let shown_count = ranked.len().min(6);
             let mut out: Vec<ProductMatrixRow> = ranked
@@ -1624,6 +1640,23 @@ fn build_product_matrix(rows: &[SummaryRow], mode: ProductDisplayMode) -> Produc
     }
 }
 
+fn product_display_order(product: &str) -> (usize, u32, String) {
+    match product {
+        "HYDROGEL_PACK" => (0, 0, product.to_string()),
+        "VELVETFRUIT_EXTRACT" => (1, 0, product.to_string()),
+        _ => voucher_strike(product)
+            .map(|strike| (2, strike, product.to_string()))
+            .unwrap_or_else(|| (1_000, 0, product.to_string())),
+    }
+}
+
+fn voucher_strike(product: &str) -> Option<u32> {
+    product
+        .strip_prefix("VEV_")
+        .or_else(|| product.strip_prefix("VEV"))
+        .and_then(|strike| strike.parse().ok())
+}
+
 fn product_column_label(row: &SummaryRow) -> String {
     row.dataset.clone()
 }
@@ -1654,17 +1687,24 @@ fn short_product_label(product: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        ProductDisplayMode, ProductMatrix, ProductMatrixRow, SummaryRow, build_carry_dataset,
+        Args, ProductDisplayMode, ProductMatrix, ProductMatrixRow, SummaryRow, build_carry_dataset,
         build_product_matrix, build_run_plan, collect_dataset_files, collect_requested_days,
         merge_submission_logs, resolve_dataset_input, resolve_dataset_input_with_root,
         round_submission_entry, run_suffix, short_dataset_label,
     };
     use crate::model::{ArtifactSet, MatchingConfig, RunMetrics, RunOutput, load_dataset};
     use crate::runner::project_root;
+    use clap::Parser;
     use indexmap::IndexMap;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn product_display_defaults_to_full() {
+        let args = Args::try_parse_from(["rust_backtester"]).expect("args should parse");
+        assert_eq!(args.products, ProductDisplayMode::Full);
+    }
 
     #[test]
     fn product_split_formats_compact_table() {
@@ -1746,6 +1786,64 @@ mod tests {
                     },
                 ],
             }
+        );
+    }
+
+    #[test]
+    fn product_split_full_keeps_long_lists_unrolled() {
+        let row = SummaryRow {
+            dataset: "D=0".to_string(),
+            day: Some(0),
+            tick_count: 0,
+            own_trade_count: 0,
+            final_pnl_total: 78.0,
+            final_pnl_by_product: {
+                let mut values = IndexMap::new();
+                values.insert("VEV_6500".to_string(), 12.0);
+                values.insert("VEV_6000".to_string(), 11.0);
+                values.insert("VEV_5500".to_string(), 10.0);
+                values.insert("VEV_5400".to_string(), 9.0);
+                values.insert("VEV_5300".to_string(), 8.0);
+                values.insert("VEV_5200".to_string(), 7.0);
+                values.insert("VEV_5100".to_string(), 6.0);
+                values.insert("VEV_5000".to_string(), 5.0);
+                values.insert("VEV_4500".to_string(), 4.0);
+                values.insert("VEV_4000".to_string(), 3.0);
+                values.insert("VELVETFRUIT_EXTRACT".to_string(), 2.0);
+                values.insert("HYDROGEL_PACK".to_string(), 1.0);
+                values
+            },
+            run_dir: None,
+        };
+
+        let matrix = build_product_matrix(&[row], ProductDisplayMode::Full);
+
+        assert_eq!(
+            matrix
+                .rows
+                .iter()
+                .map(|row| row.product.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "HYDROGEL_PACK",
+                "VELVETFRUIT_EXTRACT",
+                "VEV_4000",
+                "VEV_4500",
+                "VEV_5000",
+                "VEV_5100",
+                "VEV_5200",
+                "VEV_5300",
+                "VEV_5400",
+                "VEV_5500",
+                "VEV_6000",
+                "VEV_6500",
+            ]
+        );
+        assert!(
+            matrix
+                .rows
+                .iter()
+                .all(|row| !row.product.starts_with("OTHER"))
         );
     }
 
@@ -1845,9 +1943,19 @@ mod tests {
     }
 
     #[test]
+    fn run_suffix_distinguishes_negative_and_positive_days() {
+        let base = std::path::Path::new("datasets/round2/prices_round_2_day_0.csv");
+        let negative = run_suffix(base, Some(-1));
+        let positive = run_suffix(base, Some(1));
+        assert_eq!(negative, "round2-day-1");
+        assert_eq!(positive, "round2-day+1");
+        assert_ne!(negative, positive);
+    }
+
+    #[test]
     fn dataset_alias_defaults_to_latest_round() {
         let dataset = resolve_dataset_input(None).expect("dataset should resolve");
-        assert_eq!(dataset.label, "round2");
+        assert_eq!(dataset.label, "round3");
         assert_eq!(dataset.roots.len(), 1);
         assert!(dataset.auto_selected);
     }
