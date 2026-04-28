@@ -10,20 +10,47 @@ macro_rules! values {
 }
 
 fn main() -> anyhow::Result<()> {
-    let sweep_parameters = vec![
-        /*("OSMIUM_CLIP", values![8, 10, 12, 14, 16]),
-        ("SNIPE_POSITION_LIMIT", values![20, 25, 30]),
-        ("WINDOW_SIZE", values![5, 10, 15, 20]),
-        ("DEVIATION_MULTIPLIER", values![1, 2, 5, 8, 10]),*/
-        //("BLEND", values![0, 5, 10, 30, 40, 60, 80]),
-        //("WINDOW_SIZE", values![10, 30, 50, 100, 200]),
-        //("HYDROGEL_MAX_ORDER_SIZE", values![4, 8, 16, 32]),
-        //("SNIPE_EDGE", values![1, 5, 7, 10, 12, 15, 20, 25, 35]),
-        //("PASSIVE_EDGE_MULTIPLIER", values![1, 10, 20, 50, 100, 200]),
-        //("MAX_ORDER_SIZE", values![4, 8, 16, 32]),
+    /*
+HYDROGEL_FAIR_VALUE = 10000.0
+HYDROGEL_SNIPE_EDGE = 9
+HYDROGEL_MAX_TAKE_SIZE = 9
+HYDROGEL_PASSIVE_ORDER_SIZE = 4
+HYDROGEL_PASSIVE_RESERVE = 12
+HYDROGEL_PASSIVE_EDGE_MULTIPLIER = 20
+HYDROGEL_INVENTORY_SKEW = 3.0
 
-        ("MARK_67_WINDOW_SIZE", values![10, 30, 50, 100, 200, 1000]),
-        ("MARK_67_SIGNAL_STRENGTH", values![0, 1, 5, 10, 20, 50, 100, 200, 1000, 10000, 100000]),
+
+VELVET_WINDOW_SIZE = 5
+VELVET_BLEND_PCT = 12
+VELVET_SNIPE_EDGE = 12
+VELVET_MAX_TAKE_SIZE = 60
+
+ HYDROGEL_SNIPE_EDGE=9, HYDROGEL_MAX_TAKE_SIZE=12, HYDROGEL_PASSIVE_ORDER_SIZE=8  
+ 
+ 
+VELVET_PASSIVE_ORDER_SIZE = 24
+VELVET_PASSIVE_EDGE_MULTIPLIER = 35
+VELVET_PASSIVE_RESERVE = 20
+VELVET_INVENTORY_SKEW = 5.0
+    */
+    let sweep_parameters = vec![
+        /*("HYDROGEL_SNIPE_EDGE", values![3, 6, 9, 12, 15, 20]),
+        ("HYDROGEL_MAX_TAKE_SIZE", values![3, 5, 8, 12, 20, 30]),
+        ("HYDROGEL_PASSIVE_ORDER_SIZE", values![2, 4, 6, 8, 12, 20]),*/
+        /*("HYDROGEL_PASSIVE_RESERVE", values![6, 12, 18, 24, 36, 48]),
+        ("HYDROGEL_PASSIVE_EDGE_MULTIPLIER", values![10, 20, 30, 50, 100]),
+        ("HYDROGEL_INVENTORY_SKEW", values![1, 3, 5]),*/
+
+        /*("VELVET_WINDOW_SIZE", values![5, 10, 100]),
+        ("VELVET_BLEND_PCT", values![0, 12, 25, 50]),
+        ("VELVET_SNIPE_EDGE", values![6, 12, 15, 20]),
+        ("VELVET_MAX_TAKE_SIZE", values![5, 8, 12, 20, 30]),*/
+
+        ("VELVET_PASSIVE_ORDER_SIZE", values![24]),
+        ("VELVET_PASSIVE_EDGE_MULTIPLIER", values![10, 20, 35, 50, 100]),
+        ("VELVET_PASSIVE_RESERVE", values![10, 20, 30, 40]),
+        ("VELVET_INVENTORY_SKEW", values![1.0, 3.0, 5.0]),
+
     ];
     let parameter_sets = build_parameter_sets(&sweep_parameters);
 
