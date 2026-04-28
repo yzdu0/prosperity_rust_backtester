@@ -126,134 +126,62 @@ class Trader:
         "VEV_5400": 3.43,
         "VEV_5500": 1.74,
     }
-
-    def __init__(self):
-        self.velvetfruit_window: List[float] = [DEFAULT_SPOT_PRICE] * VELVET_WINDOW_SIZE
-        self.trader_data = ""
-
-    def update_globals(self, updates: Dict[str, Any]):
-        globals().update(updates)
+    ROUND5_PREFIXES = (
+        "GALAXY_SOUNDS_",
+        "SLEEP_POD_",
+        "MICROCHIP_",
+        "PEBBLES_",
+        "ROBOT_",
+        "UV_VISOR_",
+        "TRANSLATOR_",
+        "PANEL_",
+        "OXYGEN_SHAKE_",
+        "SNACKPACK_",
+    )
+    ROUND5_LIMIT = 10
+    QUOTE_SIZE = 5
 
     def run(self, state: TradingState):
-        result: dict[str, List[Order]] = {}
-        self.trader_data = state.traderData or ""
+        orders_by_product: Dict[str, List[Order]] = {}
 
-        self._update_velvet_window(state)
+        for product, order_depth in state.order_depths.items():
+            if product not in self.LIMITS:
+                orders_by_product[product] = []
+                continue
+            position = int(state.position.get(product, 0))
+            orders_by_product[product] = self.quote_both_sides(
+                product,
+                order_depth,
+                position,
+            )
 
-        for symbol, depth in state.order_depths.items():
-            pos = state.position.get(symbol, 0)
-            limit = self.LIMITS.get(symbol, 200)
+        return orders_by_product, 0, ""
 
-            if symbol == "HYDROGEL_PACK":
-                pass
-                #result[symbol] = self.hydrogel_mean_reversion(depth, pos, limit)
-            elif symbol == "VELVETFRUIT_EXTRACT": #or symbol in self.VOUCHERS:
-                result[symbol] = self.velvet_mean_reversion(depth, pos, limit, symbol, state.timestamp)
-            elif symbol == "VEV_6000":
-                result[symbol] = self._hedge(depth, pos, limit)
-
-        return result, 0, self.trader_data
-
-    def _update_velvet_window(self, state: TradingState) -> None:
-        depth = state.order_depths.get("VELVETFRUIT_EXTRACT")
-        if depth is None:
-            return
-
-        best_bid, best_ask, _, _ = self._best_bid_ask(depth)
-        if best_bid is not None and best_ask is not None:
-            mid = (best_bid + best_ask) / 2.0
-            self.velvetfruit_window.append(mid)
-            while len(self.velvetfruit_window) > VELVET_WINDOW_SIZE:
-                self.velvetfruit_window.pop(0)
-
-    @staticmethod
-    def _best_bid_ask(depth: OrderDepth) -> Tuple[Optional[int], Optional[int], int, int]:
-        best_bid = max(depth.buy_orders) if depth.buy_orders else None
-        best_ask = min(depth.sell_orders) if depth.sell_orders else None
-        bid_vol = depth.buy_orders.get(best_bid, 0) if best_bid is not None else 0
-        ask_vol = -depth.sell_orders.get(best_ask, 0) if best_ask is not None else 0
-        return best_bid, best_ask, bid_vol, ask_vol
-
-    @staticmethod
-    def _inventory_skew(pos: int, limit: int, skew_at_limit: float) -> float:
-        if limit <= 0:
-            return 0.0
-        return skew_at_limit * pos / limit
-
-    def _hedge(self, depth: OrderDepth, pos: int, limit: int) -> List[Order]:
-        orders: List[Order] = []
-        if pos < limit:
-            orders.append(Order("VEV_6000", 1, limit - pos))
-        return orders
-
-    def _velvet_spot_fair_value(self) -> float:
-        rolling_mid = sum(self.velvetfruit_window) / len(self.velvetfruit_window)
-        return rolling_mid * VELVET_BLEND_PCT / 100.0 + DEFAULT_SPOT_PRICE * (1.0 - VELVET_BLEND_PCT / 100.0)
-
-    def _voucher_fair_value(self, symbol: str, timestamp: int, spot_fv: float) -> float:
-        strike = float(extract_strike(symbol))
-        option_spot = spot_fv if VOUCHER_USE_DYNAMIC_SPOT else DEFAULT_SPOT_PRICE
-        return black_scholes_call(
-            spot=max(option_spot, 1e-8),
-            strike=strike,
-            annualized_vol=FITTED_ANNUALIZED_VOLS[symbol],
-            tte_days_value=tte_days(CURRENT_DAY, timestamp + OPTION_TTE_OFFSET_US),
-        )
-
-    def _voucher_edge(self, symbol: str) -> int:
-        edge = VELVET_SNIPE_EDGE
-        scale = self.STANDARD_DEVIATION.get(symbol, self.STANDARD_DEVIATION["VEV_4000"])
-        edge *= scale / self.STANDARD_DEVIATION["VEV_4000"]
-        edge *= VOUCHER_EDGE_MULTIPLIER
-        return max(1, int(round(edge)))
-
-    def hydrogel_mean_reversion(self, depth: OrderDepth, pos: int, limit: int) -> List[Order]:
-        orders: List[Order] = []
-        fv = HYDROGEL_FAIR_VALUE - self._inventory_skew(pos, limit, HYDROGEL_INVENTORY_SKEW)
-        snipe_edge = HYDROGEL_SNIPE_EDGE
-
-        for ask_px in sorted(depth.sell_orders.keys()):
-            if ask_px < fv - snipe_edge:
-                qty = min(-depth.sell_orders[ask_px], HYDROGEL_MAX_TAKE_SIZE, int(limit - pos))
-                if qty > 0:
-                    orders.append(Order("HYDROGEL_PACK", ask_px, qty))
-                    pos += qty
-
-        for bid_px in sorted(depth.buy_orders.keys(), reverse=True):
-            if bid_px > fv + snipe_edge:
-                qty = min(depth.buy_orders[bid_px], HYDROGEL_MAX_TAKE_SIZE, int(limit + pos))
-                if qty > 0:
-                    orders.append(Order("HYDROGEL_PACK", bid_px, -qty))
-                    pos -= qty
-
-        best_bid = max(depth.buy_orders.keys()) if depth.buy_orders else int(fv - 30)
-        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else int(fv + 30)
-        my_bid = best_bid + 1
-        my_ask = best_ask - 1
-
-        if my_bid >= my_ask:
-            my_bid = int(fv) - 1
-            my_ask = int(fv) + 1
-
-        passive_edge = snipe_edge * HYDROGEL_PASSIVE_EDGE_MULTIPLIER / 100.0
-        bid_qty = min(HYDROGEL_PASSIVE_ORDER_SIZE, max(0, limit - pos - HYDROGEL_PASSIVE_RESERVE))
-        ask_qty = min(HYDROGEL_PASSIVE_ORDER_SIZE, max(0, limit + pos - HYDROGEL_PASSIVE_RESERVE))
-
-        if bid_qty > 0 and my_bid < fv - passive_edge:
-            orders.append(Order("HYDROGEL_PACK", my_bid, bid_qty))
-        if ask_qty > 0 and my_ask > fv + passive_edge:
-            orders.append(Order("HYDROGEL_PACK", my_ask, -ask_qty))
-
-        return orders
-
-    def velvet_mean_reversion(
+    def quote_both_sides(
         self,
-        depth: OrderDepth,
-        pos: int,
-        limit: int,
-        symbol: str,
-        timestamp: int,
+        product: str,
+        order_depth: OrderDepth,
+        position: int,
     ) -> List[Order]:
+        if not order_depth.buy_orders or not order_depth.sell_orders:
+            return []
+
+        best_bid = max(order_depth.buy_orders)
+        best_ask = min(order_depth.sell_orders)
+        if best_bid >= best_ask:
+            return []
+
+        if best_ask - best_bid > 1:
+            bid_price = best_bid + 1
+            ask_price = best_ask - 1
+        else:
+            bid_price = best_bid
+            ask_price = best_ask
+
+        limit = self.LIMITS[product]
+        buy_size = min(self.QUOTE_SIZE, max(0, limit - position))
+        sell_size = min(self.QUOTE_SIZE, max(0, limit + position))
+
         orders: List[Order] = []
         spot_fv = self._velvet_spot_fair_value()
 
