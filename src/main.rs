@@ -11,10 +11,19 @@ macro_rules! values {
 
 fn main() -> anyhow::Result<()> {
     let sweep_parameters = vec![
-        ("OSMIUM_CLIP", values![8, 10, 12, 14, 16]),
+        /*("OSMIUM_CLIP", values![8, 10, 12, 14, 16]),
         ("SNIPE_POSITION_LIMIT", values![20, 25, 30]),
         ("WINDOW_SIZE", values![5, 10, 15, 20]),
-        ("DEVIATION_MULTIPLIER", values![1, 2, 5, 8, 10]),
+        ("DEVIATION_MULTIPLIER", values![1, 2, 5, 8, 10]),*/
+        //("BLEND", values![0, 5, 10, 30, 40, 60, 80]),
+        //("WINDOW_SIZE", values![10, 30, 50, 100, 200]),
+        //("HYDROGEL_MAX_ORDER_SIZE", values![4, 8, 16, 32]),
+        //("SNIPE_EDGE", values![1, 5, 7, 10, 12, 15, 20, 25, 35]),
+        //("PASSIVE_EDGE_MULTIPLIER", values![1, 10, 20, 50, 100, 200]),
+        //("MAX_ORDER_SIZE", values![4, 8, 16, 32]),
+
+        ("MARK_67_WINDOW_SIZE", values![10, 30, 50, 100, 200, 1000]),
+        ("MARK_67_SIGNAL_STRENGTH", values![0, 1, 5, 10, 20, 50, 100, 200, 1000, 10000, 100000]),
     ];
     let parameter_sets = build_parameter_sets(&sweep_parameters);
 

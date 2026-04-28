@@ -1,171 +1,282 @@
 from datamodel import OrderDepth, TradingState, Order
-from typing import Any, Dict, List, Tuple, Optional
-import json
+from typing import List, Tuple, Optional, Dict, Any
+from math import erf, log, sqrt
 
-# ─────────────────────────────────────────
-#  Configuration
-# ─────────────────────────────────────────
+DAY_0_START_TTE_DAYS = 8.0
+DEFAULT_SPOT_PRICE = 5250.0
+TIMESTAMP_UNITS_PER_DAY = 1_000_000
+CURRENT_DAY = 3
 
-POSITION_LIMIT: Dict[str, int] = {
-    "ASH_COATED_OSMIUM": 80,
-    "INTARIAN_PEPPER_ROOT": 80,
+FITTED_ANNUALIZED_VOLS = {
+    "VEV_4000": 0.524471,
+    "VEV_4500": 0.305594,
+    "VEV_5000": 0.241909,
+    "VEV_5100": 0.240341,
+    "VEV_5200": 0.242147,
+    "VEV_5300": 0.244538,
+    "VEV_5400": 0.229586,
+    "VEV_5500": 0.248458,
+    "VEV_6000": 0.377506,
+    "VEV_6500": 0.570137,
 }
 
-OSMIUM_FAIR_VALUE    = 10_000
-OSMIUM_MM_INSIDE     = 60      # max distance from FV for passive quotes
-OSMIUM_CLIP          = 10      # max qty per side per tick (≤ max observed market order)
-SNIPE_POSITION_LIMIT = 40      # max net position built purely through sniping
-WINDOW_SIZE          = 25      # rolling-average window for OSMIUM fair value
-DEVIATION_MULTIPLIER = 2.0     # how much extra room to give when sniping based on current FV deviation from long-run FV
+BLEND = 5
+WINDOW_SIZE = 3
+SNIPE_EDGE = 15
+PASSIVE_EDGE_MULTIPLIER = 20
+
+MARK_67_WINDOW_SIZE = 10
+MARK_67_SIGNAL_STRENGTH = 1
+
+HYDROGEL_SNIPE_EDGE = 5
+HYDROGEL_MAX_ORDER_SIZE = 4
+HYDROGEL_PASSIVE_RESERVE = 10
 
 
-# ─────────────────────────────────────────
-#  Trader
-# ─────────────────────────────────────────
+def extract_strike(option_product: str) -> int:
+    prefix = "VEV_"
+    if not option_product.startswith(prefix):
+        raise ValueError(f"Unsupported option product: {option_product}")
+    return int(option_product[len(prefix):])
+
+
+def normal_cdf(x: float) -> float:
+    return 0.5 * (1.0 + erf(x / sqrt(2.0)))
+
+
+def black_scholes_call(
+    spot: float,
+    strike: float,
+    annualized_vol: float,
+    tte_days: float,
+) -> float:
+    if spot <= 0.0:
+        return 0.0
+
+    intrinsic = max(spot - strike, 0.0)
+    time_years = max(tte_days, 1e-8) / 365.0
+    sigma_sqrt_t = max(annualized_vol * sqrt(time_years), 1e-12)
+
+    if sigma_sqrt_t <= 1e-10:
+        return intrinsic
+
+    d1 = (log(spot / strike) + 0.5 * sigma_sqrt_t * sigma_sqrt_t) / sigma_sqrt_t
+    d2 = d1 - sigma_sqrt_t
+    return max(intrinsic, spot * normal_cdf(d1) - strike * normal_cdf(d2))
+
+
+def start_of_day_tte_days(day: int) -> float:
+    return max(DAY_0_START_TTE_DAYS - day, 1e-8)
+
+
+def tte_days(day: int, timestamp: int) -> float:
+    return max(start_of_day_tte_days(day) - timestamp / TIMESTAMP_UNITS_PER_DAY, 1e-8)
+
+
+def estimate_extrinsic(
+    day: int,
+    timestamp: int,
+    option_product: str,
+    spot_price: float = DEFAULT_SPOT_PRICE,
+) -> float:
+    annualized_vol = FITTED_ANNUALIZED_VOLS[option_product]
+    strike = extract_strike(option_product)
+    call_value = black_scholes_call(
+        spot=spot_price,
+        strike=float(strike),
+        annualized_vol=annualized_vol,
+        tte_days=tte_days(day, timestamp),
+    )
+    return call_value - (spot_price - strike)
+
 
 class Trader:
     LIMITS = {
-        "EMERALDS": 80,
-        "TOMATOES": 80,
-        "INTARIAN_PEPPER_ROOT": 80,
-        "ASH_COATED_OSMIUM": 80,
+        "VELVETFRUIT_EXTRACT": 200,
+        "VEV_4000": 300,
+        "VEV_4500": 300,
+        "VEV_5000": 300,
+        "VEV_5100": 300,
+        "VEV_5200": 300,
+        "VEV_5300": 300,
+        "VEV_5400": 300,
+        "VEV_5500": 300,
+        "HYDROGEL_PACK": 200,
     }
-    QUOTE_SIZE = 5
+
+    VOUCHERS = [
+        "VEV_4000",
+        "VEV_4500",
+        "VEV_5000",
+        "VEV_5100",
+        "VEV_5200",
+        "VEV_5300",
+        "VEV_5400",
+        "VEV_5500",
+    ]
+
+    STANDARD_DEVIATION = {
+        "VEV_4000": 15.64,
+        "VEV_4500": 15.64,
+        "VEV_5000": 14.38,
+        "VEV_5100": 12.75,
+        "VEV_5200": 9.66,
+        "VEV_5300": 6.23,
+        "VEV_5400": 3.43,
+        "VEV_5500": 1.74,
+    }
+
+    def __init__(self):
+        self.velvetfruit_window: List[float] = [5250] * WINDOW_SIZE
+        self.Mark67RecentBuyVolume = [0] * MARK_67_WINDOW_SIZE
+
+    def update_globals(self, updates: Dict[str, Any]):
+        globals().update(updates)
 
     def run(self, state: TradingState):
-        self._load_state(state.traderData)
+        result: dict[str, List[Order]] = {}
 
-        result: Dict[str, List[Order]] = {}
+        self.Mark67RecentBuyVolume.append(0)
+        self.Mark67RecentBuyVolume.pop(0)
+
+        for trade in state.market_trades.get("VELVETFRUIT_EXTRACT", []):
+            if trade.buyer == "Mark 67":
+                self.Mark67RecentBuyVolume[-1] += trade.quantity
+                #if trade.price > min(state.order_depths["VELVETFRUIT_EXTRACT"].sell_orders.keys(), default=0):
+                #    self.signal = 1
 
         for symbol in state.order_depths:
-            pos   = state.position.get(symbol, 0)
-            limit = POSITION_LIMIT.get(symbol, 80)
+            if symbol == "VELVETFRUIT_EXTRACT":
+                depth = state.order_depths[symbol]
+                best_bid, best_ask, _, _ = self._best_bid_ask(depth)
+                if best_bid is not None and best_ask is not None:
+                    mid = (best_bid + best_ask) / 2.0
+                    self.velvetfruit_window.append(mid)
+                    if len(self.velvetfruit_window) > WINDOW_SIZE:
+                        self.velvetfruit_window.pop(0)
+
+        for symbol in state.order_depths:
+            pos = state.position.get(symbol, 0)
+            limit = self.LIMITS.get(symbol, 200)
             depth = state.order_depths[symbol]
 
-            if symbol == "ASH_COATED_OSMIUM":
-                result[symbol] = self._trade_osmium(depth, pos, limit)
-            elif symbol == "INTARIAN_PEPPER_ROOT":
-                result[symbol] = self._trade_root(depth, pos, limit)
+            if symbol == "HYDROGEL_PACK":
+                result[symbol] = self._trade_hydrogel(depth, pos, limit)
+            elif symbol == "VELVETFRUIT_EXTRACT": #or symbol in self.VOUCHERS:
+                result[symbol] = self._market_maker(depth, pos, limit, symbol, state.timestamp)
+            elif symbol == "VEV_6000":
+                result[symbol] = self._hedge(depth, pos, limit)
 
-        self.timestep += 1
+        return result, 0, ""
 
-        return result, 0, self._save_state()
+    @staticmethod
+    def _best_bid_ask(depth: OrderDepth) -> Tuple[Optional[int], Optional[int], int, int]:
+        best_bid = max(depth.buy_orders) if depth.buy_orders else None
+        best_ask = min(depth.sell_orders) if depth.sell_orders else None
+        bid_vol = depth.buy_orders.get(best_bid, 0) if best_bid else 0
+        ask_vol = -depth.sell_orders.get(best_ask, 0) if best_ask else 0
+        return best_bid, best_ask, bid_vol, ask_vol
 
-    # ── INTARIAN_PEPPER_ROOT ─────────────────────────────────────────────
-    # Strategy: trend-following. Lock in 80-unit long as quickly as
-    # possible and hold for the entire session.  Product reliably gains
-    # ~100 points per 100k-timestamp window, so any early buy beats a
-    # later buy.
-
-    def _trade_root(
-        self,
-        depth: OrderDepth,
-        pos: int,
-        limit: int,
-    ) -> List[Order]:
+    def _hedge(self, depth: OrderDepth, pos: int, limit: int) -> List[Order]:
         orders: List[Order] = []
-
-        _, best_ask, _, _ = self._best_bid_ask(depth)
-
-        # Anchor on the first ask ever observed so we don't chase a spike
-        if self.best_ask_ever is None and best_ask is not None:
-            self.best_ask_ever = best_ask
-
-        if not depth.sell_orders or pos >= limit or self.best_ask_ever is None:
-            return orders
-
-        for ask_px in sorted(depth.sell_orders.keys()):
-            # For the first 10 ticks, only buy within 1 tick of the
-            # best-ever ask (avoids a bad early spike).
-            # After tick 10 the product has already started its trend;
-            # buy everything available unconditionally.
-            if ask_px > self.best_ask_ever + 1 and self.timestep < 10:
-                break
-
-            avail = -depth.sell_orders[ask_px]
-            room  = limit - pos
-            qty   = min(avail, room)
-            if qty > 0:
-                orders.append(Order("INTARIAN_PEPPER_ROOT", ask_px, qty))
-                pos += qty
-
+        if pos < limit:
+            orders.append(Order("VEV_6000", 1, limit - pos))
         return orders
 
-    # ── ASH_COATED_OSMIUM ────────────────────────────────────────────────
-    # Strategy: mean-reversion market-making.
-    # Fair value = lagging rolling average of mid prices (≈ 10 000).
-    # 1. Snipe asks that are STRICTLY BELOW fair value (mean-reversion
-    #    buy) and bids STRICTLY ABOVE fair value (mean-reversion sell).
-    # 2. Passive market-make inside the prevailing spread.
-
-    def _fair_osmium(self, depth: OrderDepth) -> float:
-        best_bid, best_ask, _, _ = self._best_bid_ask(depth)
-        if best_bid is not None and best_ask is not None:
-            mid = (best_bid + best_ask) / 2.0
-            # Update the rolling window AFTER computing current FV so the
-            # estimate always lags slightly (prevents self-fulfilling loops)
-            fv = sum(self.osmium_window) / len(self.osmium_window)
-            self.osmium_window.append(mid)
-            if len(self.osmium_window) > WINDOW_SIZE:
-                self.osmium_window.pop(0)
-            return fv
-        return float(OSMIUM_FAIR_VALUE)
-
-    def _trade_osmium(
-        self,
-        depth: OrderDepth,
-        pos: int,
-        limit: int,
-    ) -> List[Order]:
+    def _trade_hydrogel(self, depth: OrderDepth, pos: int, limit: int) -> List[Order]:
         orders: List[Order] = []
+        fv = 10000.0
+        snipe_edge = HYDROGEL_SNIPE_EDGE
+        max_order_size = HYDROGEL_MAX_ORDER_SIZE
 
-        fv        = self._fair_osmium(depth)
-        deviation = fv - OSMIUM_FAIR_VALUE   # negative = market below long-run FV
-
-        # ── 1. Snipe: buy below fair value ─────────────────────────────
-        # BUG FIX vs original: cast room/qty to int and guard against
-        # negative room.  Float order quantities are engine-rejected.
         for ask_px in sorted(depth.sell_orders.keys()):
-            if ask_px < fv:                          # strictly below fair → edge
-                avail = -depth.sell_orders[ask_px]
-                # When market is below long-run FV (deviation < 0), give
-                # ourselves slightly more room to buy (mean-reversion bet).
-                room = int(SNIPE_POSITION_LIMIT - pos - deviation * DEVIATION_MULTIPLIER)
-                qty  = int(min(avail, max(0, room)))
+            if ask_px < fv - snipe_edge:
+                qty = min(-depth.sell_orders[ask_px], max_order_size, int(limit - pos))
                 if qty > 0:
-                    orders.append(Order("ASH_COATED_OSMIUM", ask_px, qty))
+                    orders.append(Order("HYDROGEL_PACK", ask_px, qty))
                     pos += qty
 
-        # ── 2. Snipe: sell above fair value ────────────────────────────
         for bid_px in sorted(depth.buy_orders.keys(), reverse=True):
-            if bid_px > fv:                          # strictly above fair → edge
-                avail = depth.buy_orders[bid_px]
-                room  = int(SNIPE_POSITION_LIMIT + pos + deviation * DEVIATION_MULTIPLIER)
-                qty   = int(min(avail, max(0, room)))
+            if bid_px > fv + snipe_edge:
+                qty = min(depth.buy_orders[bid_px], max_order_size, int(limit + pos))
                 if qty > 0:
-                    orders.append(Order("ASH_COATED_OSMIUM", bid_px, -qty))
+                    orders.append(Order("HYDROGEL_PACK", bid_px, -qty))
                     pos -= qty
 
-        # ── 3. Passive market-making ────────────────────────────────────
-        best_bid = max(depth.buy_orders.keys())  if depth.buy_orders  else 9960
-        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else 10040
+        best_bid = max(depth.buy_orders.keys()) if depth.buy_orders else fv - 30
+        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else fv + 30
+        my_bid = best_bid + 1
+        my_ask = best_ask - 1
 
-        my_bid = int(max(best_bid + 1, fv - OSMIUM_MM_INSIDE))
-        my_ask = int(min(best_ask - 1, fv + OSMIUM_MM_INSIDE))
-
-        # Guard: never post a crossed or zero-spread quote
         if my_bid >= my_ask:
             my_bid = int(fv) - 1
             my_ask = int(fv) + 1
 
-        buy_room  = limit - pos
-        sell_room = limit + pos
-        bid_qty   = int(min(OSMIUM_CLIP, buy_room))
-        ask_qty   = int(min(OSMIUM_CLIP, sell_room))
+        bid_qty = min(max_order_size, limit - pos - HYDROGEL_PASSIVE_RESERVE)
+        ask_qty = min(max_order_size, limit + pos - HYDROGEL_PASSIVE_RESERVE)
+
+        if bid_qty > 0 and my_bid < fv:
+            orders.append(Order("HYDROGEL_PACK", my_bid, bid_qty))
+        if ask_qty > 0 and my_ask > fv:
+            orders.append(Order("HYDROGEL_PACK", my_ask, -ask_qty))
+
+        return orders
+
+    def _market_maker(
+        self,
+        depth: OrderDepth,
+        pos: int,
+        limit: int,
+        symbol: str,
+        timestamp: int,
+    ) -> List[Order]:
+        orders: List[Order] = []
+        snipe_edge = SNIPE_EDGE
+        fv = sum(self.velvetfruit_window) / len(self.velvetfruit_window) * BLEND / 100 + 5250 * (1 - BLEND / 100)
+
+        #fv += (sum(self.Mark67RecentBuyVolume) / MARK67_WINDOW_SIZE) * MARK_SIGNAL_STRENGTH
+
+        if symbol.startswith("VEV_"):
+            voucher_price = int(symbol[-4:])
+            fv -= voucher_price
+            fv += estimate_extrinsic(CURRENT_DAY, timestamp + 1000 * 1000, symbol, 5250)
+            snipe_edge = int(SNIPE_EDGE * self.STANDARD_DEVIATION.get(symbol, 10) / self.STANDARD_DEVIATION["VEV_4000"])
+
+        Mark67Signal = (sum(self.Mark67RecentBuyVolume) / MARK_67_WINDOW_SIZE) * MARK_67_SIGNAL_STRENGTH / 10000
+
+        fv *= (1 - Mark67Signal)
+
+        for ask_px in sorted(depth.sell_orders.keys()):
+            if ask_px < fv - snipe_edge:
+                qty = min(-depth.sell_orders[ask_px], int(limit - pos))
+                if qty > 0:
+                    orders.append(Order(symbol, ask_px, qty))
+                    pos += qty
+
+        for bid_px in sorted(depth.buy_orders.keys(), reverse=True):
+            if bid_px > fv + snipe_edge:
+                qty = min(depth.buy_orders[bid_px], int(limit + pos))
+                if qty > 0:
+                    orders.append(Order(symbol, bid_px, -qty))
+                    pos -= qty
+
+        best_bid = max(depth.buy_orders.keys()) if depth.buy_orders else fv - 30
+        best_ask = min(depth.sell_orders.keys()) if depth.sell_orders else fv + 30
+        my_bid = best_bid + 1
+        my_ask = best_ask - 1
+
+        if my_bid >= my_ask:
+            my_bid = int(fv) - 1
+            my_ask = int(fv) + 1
+
+        bid_qty = int(min(30, limit - pos))
+        ask_qty = int(min(30, limit + pos))
 
         if bid_qty > 0:
-            orders.append(Order("ASH_COATED_OSMIUM", my_bid,  bid_qty))
+            if my_bid < fv - snipe_edge * PASSIVE_EDGE_MULTIPLIER / 100:
+                orders.append(Order(symbol, my_bid, bid_qty))
         if ask_qty > 0:
-            orders.append(Order("ASH_COATED_OSMIUM", my_ask, -ask_qty))
+            if my_ask > fv + snipe_edge * PASSIVE_EDGE_MULTIPLIER / 100:
+                orders.append(Order(symbol, my_ask, -ask_qty))
 
         return orders
