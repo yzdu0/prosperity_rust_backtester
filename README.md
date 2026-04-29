@@ -211,6 +211,7 @@ make tutorial DAY=-1
 make submission ROUND=round1
 make round3 TRADER=traders/latest_trader.py
 make round3 TRADER=traders/all_products_trader.py
+make round5 SYMBOLS=GALAXY_SOUNDS_DARK_MATTER,SNACKPACK_RASPBERRY
 make round2 PERSIST=1
 make tutorial FLAT=1
 make tutorial CARRY=1
@@ -264,6 +265,7 @@ Behavior:
 - matching `observations_*.csv` files are loaded automatically when present and exposed through `state.observations.conversionObservations`
 - `latest` and `tutorial` run the full bundled tutorial round bundle: day `-2`, day `-1`, and the sample tutorial submission log
 - use `--day <n>` to run only the matching day dataset within the round bundle; this excludes submission files
+- use `--symbol <PRODUCT>` or `--symbol A,B` to simulate only a subset of products; the loader trims non-selected book rows, market trades, and observations before replay
 - `metrics.json` is always written under `runs/<backtest-id>/`
 - default fast runs also write `submission.log` under `runs/<backtest-id>/`
 - use `--artifact-mode` to choose which extra artifacts are written

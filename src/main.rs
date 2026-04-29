@@ -11,28 +11,28 @@ macro_rules! values {
 
 fn main() -> anyhow::Result<()> {
     /*
-HYDROGEL_FAIR_VALUE = 10000.0
-HYDROGEL_SNIPE_EDGE = 9
-HYDROGEL_MAX_TAKE_SIZE = 9
-HYDROGEL_PASSIVE_ORDER_SIZE = 4
-HYDROGEL_PASSIVE_RESERVE = 12
-HYDROGEL_PASSIVE_EDGE_MULTIPLIER = 20
-HYDROGEL_INVENTORY_SKEW = 3.0
+    HYDROGEL_FAIR_VALUE = 10000.0
+    HYDROGEL_SNIPE_EDGE = 9
+    HYDROGEL_MAX_TAKE_SIZE = 9
+    HYDROGEL_PASSIVE_ORDER_SIZE = 4
+    HYDROGEL_PASSIVE_RESERVE = 12
+    HYDROGEL_PASSIVE_EDGE_MULTIPLIER = 20
+    HYDROGEL_INVENTORY_SKEW = 3.0
 
 
-VELVET_WINDOW_SIZE = 5
-VELVET_BLEND_PCT = 12
-VELVET_SNIPE_EDGE = 12
-VELVET_MAX_TAKE_SIZE = 60
+    VELVET_WINDOW_SIZE = 5
+    VELVET_BLEND_PCT = 12
+    VELVET_SNIPE_EDGE = 12
+    VELVET_MAX_TAKE_SIZE = 60
 
- HYDROGEL_SNIPE_EDGE=9, HYDROGEL_MAX_TAKE_SIZE=12, HYDROGEL_PASSIVE_ORDER_SIZE=8  
- 
- 
-VELVET_PASSIVE_ORDER_SIZE = 24
-VELVET_PASSIVE_EDGE_MULTIPLIER = 35
-VELVET_PASSIVE_RESERVE = 20
-VELVET_INVENTORY_SKEW = 5.0
-    */
+     HYDROGEL_SNIPE_EDGE=9, HYDROGEL_MAX_TAKE_SIZE=12, HYDROGEL_PASSIVE_ORDER_SIZE=8
+
+
+    VELVET_PASSIVE_ORDER_SIZE = 24
+    VELVET_PASSIVE_EDGE_MULTIPLIER = 35
+    VELVET_PASSIVE_RESERVE = 20
+    VELVET_INVENTORY_SKEW = 5.0
+        */
     let sweep_parameters = vec![
         /*("HYDROGEL_SNIPE_EDGE", values![3, 6, 9, 12, 15, 20]),
         ("HYDROGEL_MAX_TAKE_SIZE", values![3, 5, 8, 12, 20, 30]),
@@ -45,12 +45,13 @@ VELVET_INVENTORY_SKEW = 5.0
         ("VELVET_BLEND_PCT", values![0, 12, 25, 50]),
         ("VELVET_SNIPE_EDGE", values![6, 12, 15, 20]),
         ("VELVET_MAX_TAKE_SIZE", values![5, 8, 12, 20, 30]),*/
-
-        ("VELVET_PASSIVE_ORDER_SIZE", values![24]),
-        ("VELVET_PASSIVE_EDGE_MULTIPLIER", values![10, 20, 35, 50, 100]),
+        //("VELVET_PASSIVE_ORDER_SIZE", values![24]),
+        /*(
+            "VELVET_PASSIVE_EDGE_MULTIPLIER",
+            values![10, 20, 35, 50, 100],
+        ),
         ("VELVET_PASSIVE_RESERVE", values![10, 20, 30, 40]),
-        ("VELVET_INVENTORY_SKEW", values![1.0, 3.0, 5.0]),
-
+        ("VELVET_INVENTORY_SKEW", values![1.0, 3.0, 5.0]),*/
     ];
     let parameter_sets = build_parameter_sets(&sweep_parameters);
 
@@ -77,7 +78,11 @@ VELVET_INVENTORY_SKEW = 5.0
 
     println!("Sorted results:");
     for (parameter_set, result) in results {
-        println!("{}, result={}", format_parameter_set(&parameter_set), result);
+        println!(
+            "{}, result={}",
+            format_parameter_set(&parameter_set),
+            result
+        );
     }
 
     Ok(())
