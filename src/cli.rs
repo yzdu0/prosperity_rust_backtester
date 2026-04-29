@@ -10,8 +10,7 @@ use serde_json::Value;
 
 use crate::jsonfmt::{object, pretty_json_bytes};
 use crate::model::{
-    MatchingConfig, MetadataOverrides, NormalizedDataset, RunRequest, TraderGlobals,
-    load_dataset,
+    MatchingConfig, MetadataOverrides, NormalizedDataset, RunRequest, TraderGlobals, load_dataset,
     materialize_submission_json_if_missing,
 };
 use crate::runner::{default_output_root, display_path, project_root, run_backtest};
@@ -86,7 +85,7 @@ pub fn run(trader_globals: &TraderGlobals) -> Result<f64> {
     let (persist, write_metrics, write_bundle, write_submission_log, materialize_artifacts) =
         artifact_mode_settings(artifact_mode);
 
-    let mut out1 : f64 = 0.0;
+    let mut out1: f64 = 0.0;
 
     for plan in plans {
         let output = run_backtest(&RunRequest {
@@ -132,7 +131,6 @@ pub fn run(trader_globals: &TraderGlobals) -> Result<f64> {
         out1 += output.metrics.final_pnl_total;
 
         outputs.push(output);
-
     }
 
     let bundle_dir = if let Some(flat_dir) = &flat_dir {

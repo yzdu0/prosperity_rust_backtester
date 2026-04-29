@@ -8,7 +8,10 @@ Everything needed for the default backtest flow now lives inside this directory.
 
 - `traders/latest_trader.py`
 
-## Grid Search
+## Parameter Search
+
+Keep listing candidate values in `src/main.rs` under `let sweep_parameters = vec![...]`.
+The backtester now runs a genetic search across that discrete space instead of evaluating every Cartesian combination.
 
 1. Modify your `latest_trader.py`:
 ```python

@@ -18,6 +18,29 @@ PEBBLES = {
     "PEBBLES_XL",
 }
 
+MICROCHIPS = {
+    "MICROCHIP_CIRCLE",
+    "MICROCHIP_OVAL",
+    "MICROCHIP_RECTANGLE",
+    "MICROCHIP_TRIANGLE",
+    "MICROCHIP_SQUARE",
+}
+
+SNACKPACKS = {
+    "SNACKPACK_CHOCOLATE",
+    "SNACKPACK_PISTACHIO",
+    "SNACKPACK_RASPBERRY",
+    "SNACKPACK_STRAWBERRY",
+    "SNACKPACK_VANILLA",
+}
+
+GALAXY = {
+    "GALAXY_SOUNDS_BLACK_HOLES",
+    "GALAXY_SOUNDS_DARK_MATTER",
+    "GALAXY_SOUNDS_PLANETARY_RINGS",
+    "GALAXY_SOUNDS_SOLAR_FLAMES",
+    "GALAXY_SOUNDS_SOLAR_WINDS"
+}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -68,6 +91,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Quick shortcut for all PEBBLES products.",
     )
+    parser.add_argument(
+        "--microchips",
+        action="store_true",
+        help="Quick shortcut for all MICROCHIPS products.",
+    )
+    parser.add_argument(
+        "--snackpacks",
+        action="store_true",
+        help="Quick shortcut for all SNACKPACKS products.",
+    )
+    parser.add_argument(
+        "--galaxy",
+        action="store_true",
+        help="Quick shortcut for all GALAXY products.",
+    )
     return parser.parse_args()
 
 
@@ -115,6 +153,12 @@ def parse_selected_products(args: argparse.Namespace) -> set[str]:
         )
     if args.pebbles:
         selected.update(PEBBLES)
+    if args.microchips:
+        selected.update(MICROCHIPS)
+    if args.snackpacks:
+        selected.update(SNACKPACKS)
+    if args.galaxy:
+        selected.update(GALAXY)    
     return selected
 
 

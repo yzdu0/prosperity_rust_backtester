@@ -1742,9 +1742,8 @@ mod tests {
     use super::{
         BookLevel, display_path, eligible_trade_price, enforce_position_limits,
         market_trade_duplicates_touch, match_orders_for_symbol,
-        match_orders_for_symbol_raw_csv_tape, project_root, python_round_to_digits,
+        match_orders_for_symbol_raw_csv_tape, position_limit, project_root, python_round_to_digits,
         python_round_to_i64, queue_penetration_available, run_backtest, slippage_adjusted_price,
-        position_limit,
     };
     use crate::model::{
         MarketTrade, MatchingConfig, NormalizedDataset, ObservationState, Order, OrderBookLevel,
@@ -2236,7 +2235,11 @@ mod tests {
         ];
 
         for product in round5_products {
-            assert_eq!(position_limit(product), 10, "{product} should have limit 10");
+            assert_eq!(
+                position_limit(product),
+                10,
+                "{product} should have limit 10"
+            );
         }
 
         let position = IndexMap::from([

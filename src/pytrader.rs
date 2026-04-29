@@ -448,10 +448,7 @@ impl PythonTrader {
         })
     }
 
-    pub fn update_globals(
-        &mut self,
-        trader_globals: &TraderGlobals,
-    ) -> Result<()> {
+    pub fn update_globals(&mut self, trader_globals: &TraderGlobals) -> Result<()> {
         Python::attach(|py| -> Result<()> {
             let updates_json = serde_json::to_string(trader_globals)?;
             self.update_globals_fn
