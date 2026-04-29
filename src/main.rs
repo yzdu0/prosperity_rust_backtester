@@ -16,6 +16,31 @@ macro_rules! values {
 
 type SearchPoint = Vec<usize>;
 
+#[derive(Debug, Clone, Copy)]
+enum SearchAlgorithm {
+    Genetic,
+    SimulatedAnnealing,
+}
+
+impl SearchAlgorithm {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Genetic => "genetic",
+            Self::SimulatedAnnealing => "simulated annealing",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "genetic" | "ga" => Some(Self::Genetic),
+            "annealing" | "simulated_annealing" | "simulated-annealing" | "sa" => {
+                Some(Self::SimulatedAnnealing)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SearchDimension {
     name: String,
@@ -79,17 +104,23 @@ impl SearchSpace {
 
 #[derive(Debug, Clone, Copy)]
 struct SearchConfig {
+    algorithm: SearchAlgorithm,
     evaluation_budget: usize,
+    seed: u64,
     population_size: usize,
     elite_count: usize,
     tournament_size: usize,
     mutation_rate: f64,
     max_stagnant_generations: usize,
-    seed: u64,
+    annealing_restart_count: usize,
+    annealing_start_temperature: f64,
+    annealing_end_temperature: f64,
+    annealing_neighbor_mutations: usize,
+    annealing_random_jump_rate: f64,
 }
 
 impl SearchConfig {
-    fn for_space(search_space: &SearchSpace) -> Self {
+    fn for_space(search_space: &SearchSpace, algorithm: SearchAlgorithm) -> Self {
         let dimension_count = search_space.dimensions.len().max(1);
         let unique_points = search_space.max_unique_points().max(1);
         let population_target = (dimension_count * 4).clamp(12, 24);
@@ -104,15 +135,22 @@ impl SearchConfig {
         let evaluation_budget = unique_points.min(population_size.saturating_mul(generation_count));
         let mutation_rate = (1.0 / dimension_count as f64).clamp(0.18, 0.40);
         let max_stagnant_generations = (dimension_count * 2).clamp(4, 10);
+        let annealing_restart_count = dimension_count.clamp(3, 6).min(unique_points);
 
         Self {
+            algorithm,
             evaluation_budget,
+            seed: default_search_seed(),
             population_size,
             elite_count,
             tournament_size,
             mutation_rate,
             max_stagnant_generations,
-            seed: default_search_seed(),
+            annealing_restart_count,
+            annealing_start_temperature: 1.0,
+            annealing_end_temperature: 0.01,
+            annealing_neighbor_mutations: dimension_count.clamp(1, 3),
+            annealing_random_jump_rate: 0.10,
         }
     }
 }
@@ -191,26 +229,51 @@ fn main() -> Result<()> {
         /*("HYDROGEL_PASSIVE_RESERVE", values![6, 12, 18, 24, 36, 48]),
         ("HYDROGEL_PASSIVE_EDGE_MULTIPLIER", values![10, 20, 30, 50, 100]),
         ("HYDROGEL_INVENTORY_SKEW", values![1, 3, 5]),*/
-
         //("ROLLING_WINDOW_SIZE", values![40, 50, 60, 70, 80, 100]),
         //("SNIPE_EDGE", values![20, 25, 30, 35, 40, 50, 70, 100])
         //("ROLLING_WINDOW_SIZE", values![5, 10, 20, 35, 50, 100]),
-        //("WINDOW", values![100, 500, 1000, 1500, 2000, 2500, 3000, 5000]),
-        //("Z_ENTER", values![-200, -100, -80, -50, -30, -25, -10, 0, 10, 25, 50, 80, 100, 200]),
-        //("Z_PASSIVE", values![-200, -100, -50, -25, 0, 25, 50, 100,200])
+        (
+            "WINDOW",
+            values![100, 500, 1000, 1500, 2000, 2500, 3000, 5000],
+        ),
+        (
+            "Z_ENTER",
+            values![
+                -200, -100, -80, -50, -30, -25, -10, 0, 10, 25, 50, 80, 100, 200
+            ],
+        ),
+        (
+            "Z_PASSIVE",
+            values![-200, -100, -50, -25, 0, 25, 50, 100, 200],
+        ),
     ];
+    let search_algorithm = configured_search_algorithm();
     let search_space = SearchSpace::new(&sweep_parameters)?;
-    let search_config = SearchConfig::for_space(&search_space);
+    let search_config = SearchConfig::for_space(&search_space, search_algorithm);
 
-    println!(
-        "Running genetic parameter search over {} combinations with a budget of {} evaluations (population {}, elites {}, mutation {:.0}%, seed {}).",
-        search_space.total_combinations,
-        search_config.evaluation_budget,
-        search_config.population_size,
-        search_config.elite_count,
-        search_config.mutation_rate * 100.0,
-        search_config.seed,
-    );
+    match search_config.algorithm {
+        SearchAlgorithm::Genetic => println!(
+            "Running {} parameter search over {} combinations with a budget of {} evaluations (population {}, elites {}, mutation {:.0}%, seed {}).",
+            search_config.algorithm.label(),
+            search_space.total_combinations,
+            search_config.evaluation_budget,
+            search_config.population_size,
+            search_config.elite_count,
+            search_config.mutation_rate * 100.0,
+            search_config.seed,
+        ),
+        SearchAlgorithm::SimulatedAnnealing => println!(
+            "Running {} parameter search over {} combinations with a budget of {} evaluations (restarts {}, temperature {:.2}->{:.2}, max neighbor hops {}, seed {}).",
+            search_config.algorithm.label(),
+            search_space.total_combinations,
+            search_config.evaluation_budget,
+            search_config.annealing_restart_count,
+            search_config.annealing_start_temperature,
+            search_config.annealing_end_temperature,
+            search_config.annealing_neighbor_mutations,
+            search_config.seed,
+        ),
+    }
 
     let progress_bar = ProgressBar::new(search_config.evaluation_budget as u64);
     progress_bar.set_style(
@@ -226,8 +289,17 @@ fn main() -> Result<()> {
         progress_bar.inc(1);
         Ok(result)
     };
+    let progress_bar_for_status = progress_bar.clone();
+    let mut report_status = move |message: String| {
+        progress_bar_for_status.println(message);
+    };
 
-    let mut results = evolutionary_search(&search_space, search_config, &mut evaluate)?;
+    let mut results = run_search(
+        &search_space,
+        search_config,
+        &mut evaluate,
+        &mut report_status,
+    )?;
 
     progress_bar.finish_with_message("Parameter search complete");
 
@@ -243,6 +315,31 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_search<F, S>(
+    search_space: &SearchSpace,
+    search_config: SearchConfig,
+    evaluator: &mut F,
+    status_reporter: &mut S,
+) -> Result<Vec<(TraderGlobals, f64)>>
+where
+    F: FnMut(&TraderGlobals) -> Result<f64>,
+    S: FnMut(String),
+{
+    match search_config.algorithm {
+        SearchAlgorithm::Genetic => evolutionary_search(search_space, search_config, evaluator),
+        SearchAlgorithm::SimulatedAnnealing => {
+            simulated_annealing_search(search_space, search_config, evaluator, status_reporter)
+        }
+    }
+}
+
+fn configured_search_algorithm() -> SearchAlgorithm {
+    std::env::var("RUST_BACKTESTER_SEARCH_ALGORITHM")
+        .ok()
+        .and_then(|value| SearchAlgorithm::parse(&value))
+        .unwrap_or(SearchAlgorithm::Genetic)
 }
 
 fn evolutionary_search<F>(
@@ -350,6 +447,199 @@ where
         &mut score_cache,
         &mut all_results,
     )?;
+
+    all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+
+    Ok(all_results
+        .into_iter()
+        .map(|candidate| (search_space.materialize(&candidate.point), candidate.score))
+        .collect())
+}
+
+fn simulated_annealing_search<F, S>(
+    search_space: &SearchSpace,
+    search_config: SearchConfig,
+    evaluator: &mut F,
+    status_reporter: &mut S,
+) -> Result<Vec<(TraderGlobals, f64)>>
+where
+    F: FnMut(&TraderGlobals) -> Result<f64>,
+    S: FnMut(String),
+{
+    let max_unique_points = search_space.max_unique_points();
+    let evaluation_budget = search_config
+        .evaluation_budget
+        .min(max_unique_points)
+        .max(1);
+    let mut rng = SimpleRng::seeded(search_config.seed);
+    let mut score_cache = HashMap::new();
+    let mut all_results = Vec::new();
+    let restart_count = search_config
+        .annealing_restart_count
+        .min(evaluation_budget)
+        .max(1);
+    let report_interval = evaluation_budget.div_ceil(20).max(1);
+    let mut next_report_at = report_interval;
+    let mut total_attempted_moves = 0usize;
+    let mut total_accepted_moves = 0usize;
+    let mut total_worse_accepts = 0usize;
+    let mut best_overall: Option<ScoredCandidate> = None;
+
+    for restart_index in 0..restart_count {
+        if score_cache.len() >= evaluation_budget {
+            break;
+        }
+
+        let start_point =
+            annealing_start_point(search_space, restart_index, &score_cache, &mut rng);
+        let mut current = score_candidate(
+            start_point,
+            search_space,
+            evaluator,
+            &mut score_cache,
+            &mut all_results,
+        )?;
+        if best_overall
+            .as_ref()
+            .is_none_or(|best| current.score > best.score)
+        {
+            best_overall = Some(current.clone());
+        }
+        let mut restart_best = current.clone();
+        let remaining_restarts = restart_count.saturating_sub(restart_index).max(1);
+        let remaining_budget = evaluation_budget.saturating_sub(score_cache.len());
+        let steps_this_restart = remaining_budget.div_ceil(remaining_restarts).max(1);
+        let restart_number = restart_index + 1;
+
+        status_reporter(format!(
+            "SA restart {restart_number}/{restart_count}: start score {:.2}, best {:.2}, evals {}/{}",
+            current.score,
+            best_overall
+                .as_ref()
+                .map(|candidate| candidate.score)
+                .unwrap_or(current.score),
+            score_cache.len(),
+            evaluation_budget,
+        ));
+
+        for step in 0..steps_this_restart {
+            if score_cache.len() >= evaluation_budget {
+                break;
+            }
+
+            let temperature = annealing_temperature(search_config, step, steps_this_restart);
+            let candidate_point = next_annealing_point(
+                search_space,
+                &current.point,
+                search_config,
+                &score_cache,
+                &mut rng,
+            );
+            let candidate = score_candidate(
+                candidate_point,
+                search_space,
+                evaluator,
+                &mut score_cache,
+                &mut all_results,
+            )?;
+            total_attempted_moves += 1;
+            let previous_score = current.score;
+
+            let improved_restart_best = candidate.score > restart_best.score;
+            if improved_restart_best {
+                restart_best = candidate.clone();
+            }
+            let found_new_best = best_overall
+                .as_ref()
+                .is_none_or(|best| candidate.score > best.score);
+            if found_new_best {
+                best_overall = Some(candidate.clone());
+            }
+
+            let accepted =
+                should_accept_annealing_move(current.score, candidate.score, temperature, &mut rng);
+            if accepted {
+                total_accepted_moves += 1;
+                if candidate.score < previous_score {
+                    total_worse_accepts += 1;
+                }
+                current = candidate;
+            }
+
+            let should_report_progress = score_cache.len() >= next_report_at
+                || step + 1 == steps_this_restart
+                || found_new_best
+                || improved_restart_best;
+
+            if should_report_progress {
+                let acceptance_rate = if total_attempted_moves == 0 {
+                    0.0
+                } else {
+                    (total_accepted_moves as f64 / total_attempted_moves as f64) * 100.0
+                };
+                status_reporter(format!(
+                    "SA progress: evals {}/{}, restart {}/{}, step {}/{}, temp {:.4}, current {:.2}, restart best {:.2}, overall best {:.2}, accept {:.1}%, worse accepts {}",
+                    score_cache.len(),
+                    evaluation_budget,
+                    restart_number,
+                    restart_count,
+                    step + 1,
+                    steps_this_restart,
+                    temperature,
+                    current.score,
+                    restart_best.score,
+                    best_overall
+                        .as_ref()
+                        .map(|candidate| candidate.score)
+                        .unwrap_or(restart_best.score),
+                    acceptance_rate,
+                    total_worse_accepts,
+                ));
+
+                while next_report_at <= score_cache.len() {
+                    next_report_at = next_report_at.saturating_add(report_interval);
+                }
+            }
+        }
+
+        status_reporter(format!(
+            "SA restart {restart_number}/{restart_count} complete: restart best {:.2}, overall best {:.2}, evals {}/{}",
+            restart_best.score,
+            best_overall
+                .as_ref()
+                .map(|candidate| candidate.score)
+                .unwrap_or(restart_best.score),
+            score_cache.len(),
+            evaluation_budget,
+        ));
+    }
+
+    refine_best_candidate(
+        search_space,
+        evaluation_budget,
+        evaluator,
+        &mut score_cache,
+        &mut all_results,
+    )?;
+    if let Some(best_candidate) = all_results
+        .iter()
+        .max_by(|left, right| left.score.total_cmp(&right.score))
+    {
+        let acceptance_rate = if total_attempted_moves == 0 {
+            0.0
+        } else {
+            (total_accepted_moves as f64 / total_attempted_moves as f64) * 100.0
+        };
+        status_reporter(format!(
+            "SA complete: best {:.2}, evals {}/{}, attempted moves {}, accept {:.1}%, worse accepts {}",
+            best_candidate.score,
+            score_cache.len(),
+            evaluation_budget,
+            total_attempted_moves,
+            acceptance_rate,
+            total_worse_accepts,
+        ));
+    }
 
     all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
 
@@ -508,6 +798,28 @@ fn initial_population(
     points
 }
 
+fn annealing_start_point(
+    search_space: &SearchSpace,
+    restart_index: usize,
+    score_cache: &HashMap<SearchPoint, f64>,
+    rng: &mut SimpleRng,
+) -> SearchPoint {
+    let boundary_points = [
+        boundary_point(search_space, Boundary::Middle),
+        boundary_point(search_space, Boundary::Low),
+        boundary_point(search_space, Boundary::High),
+    ];
+
+    if let Some(point) = boundary_points.get(restart_index) {
+        if !score_cache.contains_key(point) {
+            return point.clone();
+        }
+    }
+
+    random_unseen_point(search_space, score_cache, &HashSet::new(), rng)
+        .unwrap_or_else(|| random_point(search_space, rng))
+}
+
 fn breed_next_generation(
     search_space: &SearchSpace,
     search_config: SearchConfig,
@@ -616,6 +928,107 @@ fn reseed_population(
     next_points
 }
 
+fn annealing_temperature(search_config: SearchConfig, step_index: usize, step_count: usize) -> f64 {
+    if step_count <= 1 {
+        return search_config.annealing_end_temperature.max(f64::EPSILON);
+    }
+
+    let progress = step_index as f64 / (step_count.saturating_sub(1)) as f64;
+    let start = search_config.annealing_start_temperature.max(f64::EPSILON);
+    let end = search_config.annealing_end_temperature.max(f64::EPSILON);
+
+    start.powf(1.0 - progress) * end.powf(progress)
+}
+
+fn next_annealing_point(
+    search_space: &SearchSpace,
+    current_point: &[usize],
+    search_config: SearchConfig,
+    score_cache: &HashMap<SearchPoint, f64>,
+    rng: &mut SimpleRng,
+) -> SearchPoint {
+    if rng.gen_bool(search_config.annealing_random_jump_rate) {
+        return random_unseen_point(search_space, score_cache, &HashSet::new(), rng)
+            .unwrap_or_else(|| random_point(search_space, rng));
+    }
+
+    random_unseen_neighbor(search_space, current_point, search_config, score_cache, rng)
+        .unwrap_or_else(|| annealing_neighbor(search_space, current_point, search_config, rng))
+}
+
+fn random_unseen_neighbor(
+    search_space: &SearchSpace,
+    current_point: &[usize],
+    search_config: SearchConfig,
+    score_cache: &HashMap<SearchPoint, f64>,
+    rng: &mut SimpleRng,
+) -> Option<SearchPoint> {
+    if score_cache.len() >= search_space.max_unique_points() {
+        return None;
+    }
+
+    for _ in 0..64 {
+        let point = annealing_neighbor(search_space, current_point, search_config, rng);
+        if !score_cache.contains_key(&point) {
+            return Some(point);
+        }
+    }
+
+    None
+}
+
+fn annealing_neighbor(
+    search_space: &SearchSpace,
+    current_point: &[usize],
+    search_config: SearchConfig,
+    rng: &mut SimpleRng,
+) -> SearchPoint {
+    let mutable_dimensions = mutable_dimension_indices(search_space);
+    if mutable_dimensions.is_empty() {
+        return current_point.to_vec();
+    }
+
+    let max_mutations = search_config
+        .annealing_neighbor_mutations
+        .min(mutable_dimensions.len())
+        .max(1);
+    let mutation_count = 1 + rng.gen_range(max_mutations);
+    let mut next_point = current_point.to_vec();
+    let mut used_dimensions = HashSet::new();
+
+    while used_dimensions.len() < mutation_count {
+        let dimension_index = mutable_dimensions[rng.gen_range(mutable_dimensions.len())];
+        if !used_dimensions.insert(dimension_index) {
+            continue;
+        }
+
+        let choice_count = search_space.dimensions[dimension_index].values.len();
+        next_point[dimension_index] =
+            random_different_index(choice_count, next_point[dimension_index], rng);
+    }
+
+    next_point
+}
+
+fn should_accept_annealing_move(
+    current_score: f64,
+    candidate_score: f64,
+    temperature: f64,
+    rng: &mut SimpleRng,
+) -> bool {
+    if candidate_score >= current_score {
+        return true;
+    }
+
+    let score_delta = candidate_score - current_score;
+    let acceptance_probability = (score_delta / temperature.max(f64::EPSILON))
+        .max(-50.0)
+        .exp()
+        .clamp(0.0, 1.0);
+
+    rng.gen_bool(acceptance_probability)
+}
+
 fn tournament_select<'a>(
     population: &'a [ScoredCandidate],
     tournament_size: usize,
@@ -652,13 +1065,7 @@ fn mutate_point(
     mutation_rate: f64,
     rng: &mut SimpleRng,
 ) {
-    let mutable_dimensions = search_space
-        .dimensions
-        .iter()
-        .enumerate()
-        .filter_map(|(index, dimension)| (dimension.values.len() > 1).then_some(index))
-        .collect::<Vec<_>>();
-
+    let mutable_dimensions = mutable_dimension_indices(search_space);
     if mutable_dimensions.is_empty() {
         return;
     }
@@ -679,6 +1086,15 @@ fn mutate_point(
         let choice_count = search_space.dimensions[dimension_index].values.len();
         point[dimension_index] = random_different_index(choice_count, point[dimension_index], rng);
     }
+}
+
+fn mutable_dimension_indices(search_space: &SearchSpace) -> Vec<usize> {
+    search_space
+        .dimensions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, dimension)| (dimension.values.len() > 1).then_some(index))
+        .collect()
 }
 
 fn random_different_index(choice_count: usize, current_index: usize, rng: &mut SimpleRng) -> usize {
@@ -777,7 +1193,7 @@ mod tests {
             ("E", values![0, 1, 2, 3, 4, 5]),
         ];
         let search_space = SearchSpace::new(&parameters).unwrap();
-        let search_config = SearchConfig::for_space(&search_space);
+        let search_config = SearchConfig::for_space(&search_space, SearchAlgorithm::Genetic);
 
         assert!(search_config.evaluation_budget < search_space.max_unique_points());
     }
@@ -791,13 +1207,19 @@ mod tests {
         ];
         let search_space = SearchSpace::new(&parameters).unwrap();
         let search_config = SearchConfig {
+            algorithm: SearchAlgorithm::Genetic,
             evaluation_budget: 48,
+            seed: 7,
             population_size: 12,
             elite_count: 3,
             tournament_size: 4,
             mutation_rate: 0.35,
             max_stagnant_generations: 4,
-            seed: 7,
+            annealing_restart_count: 4,
+            annealing_start_temperature: 1.0,
+            annealing_end_temperature: 0.01,
+            annealing_neighbor_mutations: 2,
+            annealing_random_jump_rate: 0.10,
         };
 
         let results = evolutionary_search(&search_space, search_config, &mut |parameter_set| {
@@ -810,6 +1232,55 @@ mod tests {
                 - 12.0 * (b - 1.0).powi(2)
                 - 25.0 * (c - 3.0).powi(2))
         })
+        .unwrap();
+
+        assert!(
+            results[0].1 >= 480.0,
+            "expected a near-optimal score, got {}",
+            results[0].1
+        );
+    }
+
+    #[test]
+    fn simulated_annealing_finds_known_peak() {
+        let parameters = vec![
+            ("A", values![0, 1, 2, 3]),
+            ("B", values![0, 1, 2, 3]),
+            ("C", values![0, 1, 2, 3]),
+        ];
+        let search_space = SearchSpace::new(&parameters).unwrap();
+        let search_config = SearchConfig {
+            algorithm: SearchAlgorithm::SimulatedAnnealing,
+            evaluation_budget: 48,
+            seed: 11,
+            population_size: 12,
+            elite_count: 3,
+            tournament_size: 4,
+            mutation_rate: 0.35,
+            max_stagnant_generations: 4,
+            annealing_restart_count: 4,
+            annealing_start_temperature: 1.0,
+            annealing_end_temperature: 0.01,
+            annealing_neighbor_mutations: 2,
+            annealing_random_jump_rate: 0.10,
+        };
+
+        let mut report_status = |_message: String| {};
+        let results = simulated_annealing_search(
+            &search_space,
+            search_config,
+            &mut |parameter_set| {
+                let a = parameter_set.get("A").and_then(Value::as_i64).unwrap() as f64;
+                let b = parameter_set.get("B").and_then(Value::as_i64).unwrap() as f64;
+                let c = parameter_set.get("C").and_then(Value::as_i64).unwrap() as f64;
+
+                Ok(500.0
+                    - 20.0 * (a - 2.0).powi(2)
+                    - 12.0 * (b - 1.0).powi(2)
+                    - 25.0 * (c - 3.0).powi(2))
+            },
+            &mut report_status,
+        )
         .unwrap();
 
         assert!(

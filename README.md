@@ -11,7 +11,7 @@ Everything needed for the default backtest flow now lives inside this directory.
 ## Parameter Search
 
 Keep listing candidate values in `src/main.rs` under `let sweep_parameters = vec![...]`.
-The backtester now runs a genetic search across that discrete space instead of evaluating every Cartesian combination.
+Choose the search strategy with `RUST_BACKTESTER_SEARCH_ALGORITHM=genetic` or `RUST_BACKTESTER_SEARCH_ALGORITHM=annealing`; the backtester supports both genetic search and simulated annealing across that discrete space instead of evaluating every Cartesian combination.
 
 1. Modify your `latest_trader.py`:
 ```python
