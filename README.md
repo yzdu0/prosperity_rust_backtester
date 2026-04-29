@@ -12,6 +12,7 @@ Everything needed for the default backtest flow now lives inside this directory.
 
 Keep listing candidate values in `src/main.rs` under `let sweep_parameters = vec![...]`.
 Choose the search strategy with `RUST_BACKTESTER_SEARCH_ALGORITHM=genetic` or `RUST_BACKTESTER_SEARCH_ALGORITHM=annealing`; the backtester supports both genetic search and simulated annealing across that discrete space instead of evaluating every Cartesian combination.
+Use `let search_max_evaluations = Some(...)` in `src/main.rs` to cap how many parameter sets either algorithm evaluates, or `None` to keep the automatic budget.
 
 1. Modify your `latest_trader.py`:
 ```python

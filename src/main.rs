@@ -217,7 +217,11 @@ struct SearchConfig {
 }
 
 impl SearchConfig {
-    fn for_space(search_space: &SearchSpace, algorithm: SearchAlgorithm) -> Self {
+    fn for_space(
+        search_space: &SearchSpace,
+        algorithm: SearchAlgorithm,
+        max_evaluations: Option<usize>,
+    ) -> Self {
         let dimension_count = search_space.dimensions.len().max(1);
         let unique_points = search_space.max_unique_points().max(1);
         let population_target = (dimension_count * 4).clamp(12, 24);
@@ -229,7 +233,9 @@ impl SearchConfig {
             population_size.min(4)
         };
         let generation_count = (dimension_count * 4).clamp(12, 24);
-        let evaluation_budget = unique_points.min(population_size.saturating_mul(generation_count));
+        let auto_evaluation_budget =
+            unique_points.min(population_size.saturating_mul(generation_count));
+        let evaluation_budget = clamp_evaluation_budget(auto_evaluation_budget, max_evaluations);
         let mutation_rate = (1.0 / dimension_count as f64).clamp(0.18, 0.40);
         let max_stagnant_generations = (dimension_count * 2).clamp(4, 10);
         let annealing_restart_count = dimension_count.clamp(3, 6).min(unique_points);
@@ -249,6 +255,16 @@ impl SearchConfig {
             annealing_neighbor_mutations: dimension_count.clamp(1, 3),
             annealing_random_jump_rate: 0.10,
         }
+    }
+}
+
+fn clamp_evaluation_budget(auto_evaluation_budget: usize, max_evaluations: Option<usize>) -> usize {
+    match max_evaluations {
+        Some(limit) => {
+            assert!(limit > 0, "search_max_evaluations must be at least 1");
+            auto_evaluation_budget.min(limit)
+        }
+        None => auto_evaluation_budget,
     }
 }
 
@@ -329,13 +345,17 @@ fn main() -> Result<()> {
         //("ROLLING_WINDOW_SIZE", values![40, 50, 60, 70, 80, 100]),
         //("SNIPE_EDGE", values![20, 25, 30, 35, 40, 50, 70, 100])
         //("ROLLING_WINDOW_SIZE", values![5, 10, 20, 35, 50, 100]),
-        //("WINDOW", range_values(100, 5000, 100)),
-        //("Z_ENTER", range_values(-200, 200, 10)),
-        //("Z_PASSIVE", range_values(-200, 200, 10)),
+        ("WINDOW", range_values(100, 7000, 100)),
+        ("Z_ENTER", range_values(-200, 200, 10)),
+        ("Z_PASSIVE", range_values(-200, 200, 10)),
+        ("MOMENTUM", range_values(-100, 100, 10)),
+        ("MOMENTUM_LOOKBACK", range_values(10, 2000, 100)),
     ];
     let search_algorithm = configured_search_algorithm();
+    let search_max_evaluations = Some(150usize);
     let search_space = SearchSpace::new(&sweep_parameters)?;
-    let search_config = SearchConfig::for_space(&search_space, search_algorithm);
+    let search_config =
+        SearchConfig::for_space(&search_space, search_algorithm, search_max_evaluations);
     let suppress_log_writes = search_space.max_unique_points() > 1;
 
     match search_config.algorithm {
@@ -1285,9 +1305,25 @@ mod tests {
             ("E", values![0, 1, 2, 3, 4, 5]),
         ];
         let search_space = SearchSpace::new(&parameters).unwrap();
-        let search_config = SearchConfig::for_space(&search_space, SearchAlgorithm::Genetic);
+        let search_config = SearchConfig::for_space(&search_space, SearchAlgorithm::Genetic, None);
 
         assert!(search_config.evaluation_budget < search_space.max_unique_points());
+    }
+
+    #[test]
+    fn search_config_can_cap_evaluation_budget() {
+        let parameters = vec![
+            ("A", values![0, 1, 2, 3, 4, 5]),
+            ("B", values![0, 1, 2, 3, 4, 5]),
+            ("C", values![0, 1, 2, 3, 4, 5]),
+            ("D", values![0, 1, 2, 3, 4, 5]),
+            ("E", values![0, 1, 2, 3, 4, 5]),
+        ];
+        let search_space = SearchSpace::new(&parameters).unwrap();
+        let search_config =
+            SearchConfig::for_space(&search_space, SearchAlgorithm::Genetic, Some(150));
+
+        assert_eq!(search_config.evaluation_budget, 150);
     }
 
     #[test]
