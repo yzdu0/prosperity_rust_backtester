@@ -168,7 +168,8 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
 
     let run_id = resolve_run_id(request)?;
     let run_dir = request.output_root.join(&run_id);
-    let need_submission_log = request.persist || request.write_submission_log;
+    let need_submission_log =
+        !request.suppress_log_writes && (request.persist || request.write_submission_log);
     let write_bundle = request.persist || request.write_bundle || request.materialize_artifacts;
     let full_artifacts = request.persist || request.materialize_artifacts;
     if need_submission_log || request.write_metrics || write_bundle {
@@ -458,7 +459,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
         } else {
             Vec::new()
         };
-        let combined_log = if full_artifacts {
+        let combined_log = if full_artifacts && !request.suppress_log_writes {
             build_combined_log(&sandbox_rows, &activity_rows, &combined_trade_history)?
         } else {
             Vec::new()
@@ -479,16 +480,19 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
         };
 
         if request.persist {
-            write_artifacts(&run_dir, &artifact_set)?;
+            write_artifacts(&run_dir, &artifact_set, request.suppress_log_writes)?;
         } else if request.write_bundle && request.write_metrics {
             write_metrics_and_bundle(&run_dir, &artifact_set)?;
-        } else if request.write_submission_log && request.write_metrics {
+        } else if request.write_submission_log
+            && request.write_metrics
+            && !request.suppress_log_writes
+        {
             write_metrics_and_submission_log(&run_dir, &artifact_set)?;
         } else if request.write_bundle {
             write_bundle_only(&run_dir, &artifact_set)?;
         } else if request.write_metrics {
             write_metrics_only(&run_dir, &artifact_set)?;
-        } else if request.write_submission_log {
+        } else if request.write_submission_log && !request.suppress_log_writes {
             write_submission_log_only(&run_dir, &artifact_set)?;
         }
 
@@ -1622,16 +1626,24 @@ fn build_trades_csv(own_trade_rows: &[Value]) -> Result<Vec<u8>> {
     Ok(build_lines_bytes(&lines))
 }
 
-fn write_artifacts(run_dir: &Path, artifacts: &ArtifactSet) -> Result<()> {
+fn write_artifacts(
+    run_dir: &Path,
+    artifacts: &ArtifactSet,
+    suppress_log_writes: bool,
+) -> Result<()> {
     fs::write(run_dir.join("metrics.json"), &artifacts.metrics_json)?;
     fs::write(run_dir.join("bundle.json"), &artifacts.bundle_json)?;
-    fs::write(run_dir.join("submission.log"), &artifacts.submission_log)?;
+    if !suppress_log_writes {
+        fs::write(run_dir.join("submission.log"), &artifacts.submission_log)?;
+    }
     fs::write(run_dir.join("activity.csv"), &artifacts.activity_csv)?;
     fs::write(
         run_dir.join("pnl_by_product.csv"),
         &artifacts.pnl_by_product_csv,
     )?;
-    fs::write(run_dir.join("combined.log"), &artifacts.combined_log)?;
+    if !suppress_log_writes {
+        fs::write(run_dir.join("combined.log"), &artifacts.combined_log)?;
+    }
     fs::write(run_dir.join("trades.csv"), &artifacts.trades_csv)?;
     Ok(())
 }
@@ -2317,8 +2329,10 @@ mod tests {
             write_metrics: true,
             write_bundle: false,
             write_submission_log: true,
+            suppress_log_writes: false,
             materialize_artifacts: false,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("backtest should succeed");
@@ -2422,8 +2436,10 @@ class Trader:
             write_metrics: true,
             write_bundle: true,
             write_submission_log: false,
+            suppress_log_writes: false,
             materialize_artifacts: true,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("carry backtest should succeed");
@@ -2532,8 +2548,10 @@ class Trader:
             write_metrics: true,
             write_bundle: true,
             write_submission_log: true,
+            suppress_log_writes: false,
             materialize_artifacts: true,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("backtest should succeed");
@@ -2659,8 +2677,10 @@ class Trader:
             write_metrics: true,
             write_bundle: true,
             write_submission_log: false,
+            suppress_log_writes: false,
             materialize_artifacts: true,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("backtest should succeed");
@@ -2749,8 +2769,10 @@ class Trader:
             write_metrics: true,
             write_bundle: true,
             write_submission_log: false,
+            suppress_log_writes: false,
             materialize_artifacts: true,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("backtest should succeed");
@@ -2860,8 +2882,10 @@ class Trader:
             write_metrics: true,
             write_bundle: true,
             write_submission_log: true,
+            suppress_log_writes: false,
             materialize_artifacts: true,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("backtest should succeed");
@@ -2978,8 +3002,10 @@ class Trader:
             write_metrics: true,
             write_bundle: true,
             write_submission_log: true,
+            suppress_log_writes: false,
             materialize_artifacts: true,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("backtest should succeed");
@@ -3106,8 +3132,10 @@ class Trader:
             write_metrics: true,
             write_bundle: true,
             write_submission_log: true,
+            suppress_log_writes: false,
             materialize_artifacts: true,
             metadata_overrides: Default::default(),
+            trader_globals: IndexMap::new(),
         };
 
         let output = run_backtest(&request).expect("backtest should succeed");

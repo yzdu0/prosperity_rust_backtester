@@ -74,6 +74,8 @@ def load_trader_instance(module_name, trader_file, datamodel_module):
 
 def update_trader_globals(trader, updates_json):
     updates = json.loads(updates_json)
+    if not updates:
+        return
     update_fn = getattr(trader, "update_globals", None)
     if callable(update_fn):
         try:

@@ -132,6 +132,7 @@ pub struct RunRequest {
     pub write_metrics: bool,
     pub write_bundle: bool,
     pub write_submission_log: bool,
+    pub suppress_log_writes: bool,
     pub materialize_artifacts: bool,
     pub metadata_overrides: MetadataOverrides,
     pub trader_globals: TraderGlobals,

@@ -329,13 +329,14 @@ fn main() -> Result<()> {
         //("ROLLING_WINDOW_SIZE", values![40, 50, 60, 70, 80, 100]),
         //("SNIPE_EDGE", values![20, 25, 30, 35, 40, 50, 70, 100])
         //("ROLLING_WINDOW_SIZE", values![5, 10, 20, 35, 50, 100]),
-        ("WINDOW", range_values(100, 5000, 100)),
-        ("Z_ENTER", range_values(-200, 200, 10)),
-        ("Z_PASSIVE", range_values(-200, 200, 10)),
+        //("WINDOW", range_values(100, 5000, 100)),
+        //("Z_ENTER", range_values(-200, 200, 10)),
+        //("Z_PASSIVE", range_values(-200, 200, 10)),
     ];
     let search_algorithm = configured_search_algorithm();
     let search_space = SearchSpace::new(&sweep_parameters)?;
     let search_config = SearchConfig::for_space(&search_space, search_algorithm);
+    let suppress_log_writes = search_space.max_unique_points() > 1;
 
     match search_config.algorithm {
         SearchAlgorithm::Genetic => println!(
@@ -371,7 +372,12 @@ fn main() -> Result<()> {
 
     let mut evaluate = |parameter_set: &TraderGlobals| -> Result<f64> {
         progress_bar.set_message(format_parameter_set(parameter_set));
-        let result = rust_backtester::cli::run(parameter_set)?;
+        let result = rust_backtester::cli::run_with_options(
+            parameter_set,
+            rust_backtester::cli::RunOptions {
+                suppress_log_writes,
+            },
+        )?;
         progress_bar.inc(1);
         Ok(result)
     };

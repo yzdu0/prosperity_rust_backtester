@@ -51,7 +51,17 @@ struct Args {
     #[arg(long, value_enum, default_value_t = ProductDisplayMode::Full)]
     products: ProductDisplayMode,
 }
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunOptions {
+    pub suppress_log_writes: bool,
+}
+
 pub fn run(trader_globals: &TraderGlobals) -> Result<f64> {
+    run_with_options(trader_globals, RunOptions::default())
+}
+
+pub fn run_with_options(trader_globals: &TraderGlobals, options: RunOptions) -> Result<f64> {
     let args = Args::parse();
     let trader = resolve_trader(args.trader.as_deref())?;
     let dataset = resolve_dataset_input(args.dataset.as_deref())?;
@@ -84,6 +94,7 @@ pub fn run(trader_globals: &TraderGlobals) -> Result<f64> {
     let artifact_mode = resolve_artifact_mode(&args);
     let (persist, write_metrics, write_bundle, write_submission_log, materialize_artifacts) =
         artifact_mode_settings(artifact_mode);
+    let write_submission_log = write_submission_log && !options.suppress_log_writes;
 
     let mut out1: f64 = 0.0;
 
@@ -100,6 +111,7 @@ pub fn run(trader_globals: &TraderGlobals) -> Result<f64> {
             write_metrics,
             write_bundle,
             write_submission_log,
+            suppress_log_writes: options.suppress_log_writes,
             materialize_artifacts,
             metadata_overrides: plan.metadata_overrides.clone(),
             trader_globals: trader_globals.clone(),
@@ -1980,7 +1992,7 @@ mod tests {
     #[test]
     fn dataset_alias_defaults_to_latest_round() {
         let dataset = resolve_dataset_input(None).expect("dataset should resolve");
-        assert_eq!(dataset.label, "round5");
+        assert_eq!(dataset.label, "round6");
         assert_eq!(dataset.roots.len(), 1);
         assert!(dataset.auto_selected);
     }
