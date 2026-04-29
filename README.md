@@ -21,10 +21,10 @@ def update_globals(self, updates: Dict[str, Any]):
 2. Modify `src/main.rs`:
 ```rust
 let sweep_parameters = vec![
-        ("OSMIUM_CLIP", values![8, 10, 12, 14, 16]),
+        ("OSMIUM_CLIP", range_values(8, 16, 2)),
         ("SNIPE_POSITION_LIMIT", values![20, 25, 30]),
-        ("WINDOW_SIZE", values![5, 10, 15, 20]),
-        ("DEVIATION_MULTIPLIER", values![1, 2, 5, 8, 10]),
+        ("WINDOW_SIZE", range_values(5, 20, 5)),
+        ("DEVIATION_MULTIPLIER", range_values(1.0, 3.0, 0.5)),
 ];
 ```
 

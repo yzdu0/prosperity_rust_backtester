@@ -14,6 +14,103 @@ macro_rules! values {
     };
 }
 
+trait SweepRangeValue: Copy {
+    fn to_f64(self) -> f64;
+    fn add_steps(start: Self, step: Self, step_count: usize) -> Self;
+    fn to_json(self) -> Value;
+}
+
+impl SweepRangeValue for i64 {
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+
+    fn add_steps(start: Self, step: Self, step_count: usize) -> Self {
+        start + step * step_count as i64
+    }
+
+    fn to_json(self) -> Value {
+        serde_json::json!(self)
+    }
+}
+
+impl SweepRangeValue for i32 {
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+
+    fn add_steps(start: Self, step: Self, step_count: usize) -> Self {
+        start + step * step_count as i32
+    }
+
+    fn to_json(self) -> Value {
+        serde_json::json!(self)
+    }
+}
+
+impl SweepRangeValue for f64 {
+    fn to_f64(self) -> f64 {
+        self
+    }
+
+    fn add_steps(start: Self, step: Self, step_count: usize) -> Self {
+        start + step * step_count as f64
+    }
+
+    fn to_json(self) -> Value {
+        serde_json::json!(self)
+    }
+}
+
+fn range_values<T>(start: T, end: T, step: T) -> Vec<Value>
+where
+    T: SweepRangeValue,
+{
+    let start_f64 = start.to_f64();
+    let end_f64 = end.to_f64();
+    let step_f64 = step.to_f64();
+
+    assert!(
+        start_f64.is_finite() && end_f64.is_finite() && step_f64.is_finite(),
+        "range_values requires finite numeric bounds and step",
+    );
+    assert!(step_f64 != 0.0, "range_values step must be non-zero");
+
+    let ascending = end_f64 >= start_f64;
+    assert!(
+        (ascending && step_f64 > 0.0) || (!ascending && step_f64 < 0.0),
+        "range_values step direction must move from start toward end",
+    );
+
+    let epsilon = (step_f64.abs() * 1e-9).max(1e-12);
+    let mut values = Vec::new();
+    let mut step_count = 0usize;
+    let max_points = 100_000usize;
+
+    loop {
+        assert!(
+            step_count < max_points,
+            "range_values generated more than {max_points} points; check your bounds and step",
+        );
+
+        let current = T::add_steps(start, step, step_count);
+        let current_f64 = current.to_f64();
+
+        if ascending {
+            if current_f64 > end_f64 + epsilon {
+                break;
+            }
+        } else if current_f64 < end_f64 - epsilon {
+            break;
+        }
+
+        values.push(current.to_json());
+        step_count += 1;
+    }
+
+    values
+}
+
 type SearchPoint = Vec<usize>;
 
 #[derive(Debug, Clone, Copy)]
@@ -232,20 +329,9 @@ fn main() -> Result<()> {
         //("ROLLING_WINDOW_SIZE", values![40, 50, 60, 70, 80, 100]),
         //("SNIPE_EDGE", values![20, 25, 30, 35, 40, 50, 70, 100])
         //("ROLLING_WINDOW_SIZE", values![5, 10, 20, 35, 50, 100]),
-        (
-            "WINDOW",
-            values![100, 500, 1000, 1500, 2000, 2500, 3000, 5000],
-        ),
-        (
-            "Z_ENTER",
-            values![
-                -200, -100, -80, -50, -30, -25, -10, 0, 10, 25, 50, 80, 100, 200
-            ],
-        ),
-        (
-            "Z_PASSIVE",
-            values![-200, -100, -50, -25, 0, 25, 50, 100, 200],
-        ),
+        ("WINDOW", range_values(100, 5000, 100)),
+        ("Z_ENTER", range_values(-200, 200, 10)),
+        ("Z_PASSIVE", range_values(-200, 200, 10)),
     ];
     let search_algorithm = configured_search_algorithm();
     let search_space = SearchSpace::new(&sweep_parameters)?;
@@ -1288,5 +1374,33 @@ mod tests {
             "expected a near-optimal score, got {}",
             results[0].1
         );
+    }
+
+    #[test]
+    fn range_values_supports_integers() {
+        let values = range_values(100, 500, 200);
+
+        assert_eq!(
+            values
+                .iter()
+                .map(|value| value.as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![100, 300, 500]
+        );
+    }
+
+    #[test]
+    fn range_values_supports_floats() {
+        let values = range_values(-0.5_f64, 0.5_f64, 0.25_f64);
+        let actual = values
+            .iter()
+            .map(|value| value.as_f64().unwrap())
+            .collect::<Vec<_>>();
+        let expected = vec![-0.5, -0.25, 0.0, 0.25, 0.5];
+
+        assert_eq!(actual.len(), expected.len());
+        for (left, right) in actual.into_iter().zip(expected) {
+            assert!((left - right).abs() < 1e-9);
+        }
     }
 }
