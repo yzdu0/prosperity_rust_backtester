@@ -1,12 +1,9 @@
-# Rust Backtester - forked to run grid search on a set of global variables
+# Rust Backtester - Fork
 
-This repo is a self-contained Rust backtester for IMC Prosperity 4.
-
-It only supports local backtesting. There is no API surface and no hosted workflow in this repo.
-
-Everything needed for the default backtest flow now lives inside this directory. The bundled default trader is:
-
-- `traders/latest_trader.py`
+## Additional Features
+- Search for an optimal set of parameters (repeatedly run the backtest, injecting different global variables)
+- Search via simulated annealing
+- Script for filtering products for much faster iteration
 
 ## Parameter Search
 
