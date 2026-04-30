@@ -336,23 +336,14 @@ fn main() -> Result<()> {
     VELVET_INVENTORY_SKEW = 5.0
         */
     let sweep_parameters = vec![
-        /*("HYDROGEL_SNIPE_EDGE", values![3, 6, 9, 12, 15, 20]),
-        ("HYDROGEL_MAX_TAKE_SIZE", values![3, 5, 8, 12, 20, 30]),
-        ("HYDROGEL_PASSIVE_ORDER_SIZE", values![2, 4, 6, 8, 12, 20]),*/
-        /*("HYDROGEL_PASSIVE_RESERVE", values![6, 12, 18, 24, 36, 48]),
-        ("HYDROGEL_PASSIVE_EDGE_MULTIPLIER", values![10, 20, 30, 50, 100]),
-        ("HYDROGEL_INVENTORY_SKEW", values![1, 3, 5]),*/
-        //("ROLLING_WINDOW_SIZE", values![40, 50, 60, 70, 80, 100]),
-        //("SNIPE_EDGE", values![20, 25, 30, 35, 40, 50, 70, 100])
-        //("ROLLING_WINDOW_SIZE", values![5, 10, 20, 35, 50, 100]),
-        ("WINDOW", range_values(100, 7000, 100)),
+        ("WINDOW", range_values(100, 4000, 100)),
         ("Z_ENTER", range_values(-200, 200, 10)),
         ("Z_PASSIVE", range_values(-200, 200, 10)),
         ("MOMENTUM", range_values(-100, 100, 10)),
         ("MOMENTUM_LOOKBACK", range_values(10, 2000, 100)),
     ];
     let search_algorithm = configured_search_algorithm();
-    let search_max_evaluations = Some(150usize);
+    let search_max_evaluations = Some(250usize);
     let search_space = SearchSpace::new(&sweep_parameters)?;
     let search_config =
         SearchConfig::for_space(&search_space, search_algorithm, search_max_evaluations);

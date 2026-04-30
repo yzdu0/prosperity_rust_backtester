@@ -26,6 +26,22 @@ MICROCHIPS = {
     "MICROCHIP_SQUARE",
 }
 
+ROBOTS = {
+    "ROBOT_DISHES",
+    "ROBOT_IRONING",
+    "ROBOT_LAUNDRY",
+    "ROBOT_MOPPING",
+    "ROBOT_VACUUMING",
+}
+
+SLEEP_PODS = {
+    "SLEEP_POD_COTTON",
+    "SLEEP_POD_LAMB_WOOL",
+    "SLEEP_POD_NYLON",
+    "SLEEP_POD_POLYESTER",
+    "SLEEP_POD_SUEDE",
+}
+
 SNACKPACKS = {
     "SNACKPACK_CHOCOLATE",
     "SNACKPACK_PISTACHIO",
@@ -40,6 +56,22 @@ GALAXY = {
     "GALAXY_SOUNDS_PLANETARY_RINGS",
     "GALAXY_SOUNDS_SOLAR_FLAMES",
     "GALAXY_SOUNDS_SOLAR_WINDS"
+}
+
+TRANSLATORS = {
+    "TRANSLATOR_ASTRO_BLACK",
+    "TRANSLATOR_ECLIPSE_CHARCOAL",
+    "TRANSLATOR_GRAPHITE_MIST",
+    "TRANSLATOR_SPACE_GRAY",
+    "TRANSLATOR_VOID_BLUE",
+}
+
+UV_VISORS = {
+    "UV_VISOR_AMBER",
+    "UV_VISOR_MAGENTA",
+    "UV_VISOR_ORANGE",
+    "UV_VISOR_RED",
+    "UV_VISOR_YELLOW",
 }
 
 def parse_args() -> argparse.Namespace:
@@ -106,6 +138,26 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Quick shortcut for all GALAXY products.",
     )
+    parser.add_argument(
+        "--translators",
+        action="store_true",
+        help="Quick shortcut for all TRANSLATORS products.",
+    )
+    parser.add_argument(
+        "--uv-visors",
+        action="store_true",
+        help="Quick shortcut for all UV_VISORS products.",
+    )
+    parser.add_argument(
+        "--robots",
+        action="store_true",
+        help="Quick shortcut for all ROBOTS products.",
+    )
+    parser.add_argument(
+        "--sleep-pods",
+        action="store_true",
+        help="Quick shortcut for all SLEEP_PODS products.",
+    )
     return parser.parse_args()
 
 
@@ -159,6 +211,14 @@ def parse_selected_products(args: argparse.Namespace) -> set[str]:
         selected.update(SNACKPACKS)
     if args.galaxy:
         selected.update(GALAXY)    
+    if args.translators:
+        selected.update(TRANSLATORS)
+    if args.uv_visors:
+        selected.update(UV_VISORS)
+    if args.robots:
+        selected.update(ROBOTS) 
+    if args.sleep_pods:
+        selected.update(SLEEP_PODS)    
     return selected
 
 
